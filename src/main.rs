@@ -85,9 +85,6 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: 
                              KeyCode::Enter => {
                                  app.start_quiz().await;
                              }
-                             KeyCode::Char('m') => {
-                                 app.toggle_mode();
-                             }
                              _ => {}
                          }
                     }

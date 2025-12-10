@@ -9,12 +9,6 @@ pub enum AppState {
     FakeLog,
 }
 
-pub enum QuizMode {
-    Kana,
-    Vocab,
-    Mixed,
-}
-
 pub struct App {
     pub db: Db,
     pub state: AppState,
@@ -25,7 +19,6 @@ pub struct App {
     pub current_feedback: Option<String>,
     pub feedback_detail: String,
     pub due_count: i64,
-    pub quiz_mode: QuizMode,
     pub fake_logs: Vec<String>,
     pub fake_log_index: usize,
     pub session_start: Instant,
@@ -55,7 +48,6 @@ impl App {
             current_feedback: None,
             feedback_detail: String::new(),
             due_count,
-            quiz_mode: QuizMode::Mixed, // Default to Mixed or make selectable
             fake_logs: initial_logs,
             fake_log_index: 0,
             session_start: Instant::now(),
@@ -63,13 +55,7 @@ impl App {
     }
 
     pub async fn start_quiz(&mut self) {
-        let mode_str = match self.quiz_mode {
-            QuizMode::Kana => "kana",
-            QuizMode::Vocab => "vocab",
-            QuizMode::Mixed => "mixed",
-        };
-
-        if let Ok(cards) = self.db.get_next_batch(mode_str).await {
+        if let Ok(cards) = self.db.get_next_batch().await {
             self.due_cards = cards;
             self.current_card_index = 0;
             self.user_input.clear();
@@ -94,7 +80,7 @@ impl App {
         let card = &self.due_cards[self.current_card_index];
         let correct = self.user_input.trim().eq_ignore_ascii_case(&card.romaji);
 
-        let interval_res = self.db.update_card(&card.id, card.is_vocab, correct).await;
+        let interval_res = self.db.update_card(&card.id, correct).await;
 
         if correct {
             self.current_feedback = Some("Correct!".to_string());
@@ -107,11 +93,7 @@ impl App {
             self.current_feedback = Some(format!("Incorrect. Correct: {}", card.romaji));
 
             // Generate Feedback using local logic
-            let front_text = if let Some(meaning) = &card.meaning {
-                format!("{} ({})", card.kana_char, meaning)
-            } else {
-                card.kana_char.clone()
-            };
+            let front_text = card.kana_char.clone();
 
             self.feedback_detail = FeedbackGenerator::generate_explanation(
                 &front_text,
@@ -129,13 +111,7 @@ impl App {
 
         if self.current_card_index >= self.due_cards.len() {
             // Fetch next batch (Infinite Mode)
-            let mode_str = match self.quiz_mode {
-                QuizMode::Kana => "kana",
-                QuizMode::Vocab => "vocab",
-                QuizMode::Mixed => "mixed",
-            };
-
-            if let Ok(cards) = self.db.get_next_batch(mode_str).await {
+            if let Ok(cards) = self.db.get_next_batch().await {
                 if !cards.is_empty() {
                     self.due_cards = cards;
                     self.current_card_index = 0;
@@ -206,13 +182,5 @@ impl App {
                  }
             }
         }
-    }
-
-    pub fn toggle_mode(&mut self) {
-        self.quiz_mode = match self.quiz_mode {
-            QuizMode::Kana => QuizMode::Vocab,
-            QuizMode::Vocab => QuizMode::Mixed,
-            QuizMode::Mixed => QuizMode::Kana,
-        };
     }
 }
