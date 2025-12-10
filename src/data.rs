@@ -3,6 +3,13 @@ pub struct KanaPair {
     pub romaji: &'static str,
 }
 
+pub struct VocabPair {
+    pub kanji: &'static str,
+    pub kana: &'static str,
+    pub meaning: &'static str,
+    pub romaji: &'static str,
+}
+
 pub const KANA_DATA: &[KanaPair] = &[
     KanaPair { kana: "あ", romaji: "a" },
     KanaPair { kana: "い", romaji: "i" },
@@ -24,4 +31,17 @@ pub const KANA_DATA: &[KanaPair] = &[
     KanaPair { kana: "ウ", romaji: "u" },
     KanaPair { kana: "エ", romaji: "e" },
     KanaPair { kana: "オ", romaji: "o" },
+];
+
+pub const VOCAB_DATA: &[VocabPair] = &[
+    VocabPair { kanji: "私", kana: "わたし", meaning: "I / Me", romaji: "watashi" },
+    VocabPair { kanji: "猫", kana: "ねこ", meaning: "Cat", romaji: "neko" },
+    VocabPair { kanji: "犬", kana: "いぬ", meaning: "Dog", romaji: "inu" },
+    VocabPair { kanji: "食べる", kana: "たべる", meaning: "To eat", romaji: "taberu" },
+    VocabPair { kanji: "見る", kana: "みる", meaning: "To see", romaji: "miru" },
+    VocabPair { kanji: "本", kana: "ほん", meaning: "Book", romaji: "hon" },
+    VocabPair { kanji: "水", kana: "みず", meaning: "Water", romaji: "mizu" },
+    VocabPair { kanji: "行く", kana: "いく", meaning: "To go", romaji: "iku" },
+    VocabPair { kanji: "山", kana: "やま", meaning: "Mountain", romaji: "yama" },
+    VocabPair { kanji: "川", kana: "かわ", meaning: "River", romaji: "kawa" },
 ];

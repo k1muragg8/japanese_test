@@ -67,7 +67,19 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: 
                     return Ok(());
                 }
 
+                // Boss Key
+                if key.code == KeyCode::F(10) {
+                    app.toggle_boss_mode();
+                    continue; // Skip other handling
+                }
+
                 match app.state {
+                    AppState::FakeLog => {
+                        // In Fake Log, swallow all keys or allow exit?
+                        // Allow toggling back with F10 is handled above.
+                        // Allow Quit is handled above.
+                        // Maybe consume all other keys.
+                    }
                     AppState::Dashboard => {
                          if key.code == KeyCode::Enter {
                              app.start_quiz().await;

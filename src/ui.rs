@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Alignment},
     style::{Color, Modifier, Style},
     text::{Span, Line},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap, List, ListItem},
     Frame,
 };
 use crate::app::{App, AppState};
@@ -11,6 +11,10 @@ pub fn ui(f: &mut Frame, app: &App) {
     let size = f.area();
 
     match app.state {
+        AppState::FakeLog => {
+            // Render full screen fake log
+            draw_fake_log(f, app, size);
+        }
         AppState::Dashboard => {
             let block = Block::default()
                 .title(" Kana Tutor ")
@@ -18,11 +22,12 @@ pub fn ui(f: &mut Frame, app: &App) {
 
             let text = vec![
                 Line::from(Span::styled(
-                    format!("欢迎回来！今天有 {} 个假名需要复习。", app.due_count),
+                    format!("欢迎回来！今天有 {} 个卡片 (Kana/Vocab) 需要复习。", app.due_count),
                     Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(""),
                 Line::from("按 Enter 开始复习 (Press Enter to start)"),
+                Line::from("按 F10 切换工作模式 (Boss Key)"),
                 Line::from("按 q 退出 (Press q to quit)"),
             ];
 
@@ -30,7 +35,6 @@ pub fn ui(f: &mut Frame, app: &App) {
                 .block(block)
                 .alignment(Alignment::Center);
 
-            // Center vert/horiz
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(40), Constraint::Percentage(20), Constraint::Percentage(40)].as_ref())
@@ -53,6 +57,29 @@ pub fn ui(f: &mut Frame, app: &App) {
     }
 }
 
+fn draw_fake_log(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let items: Vec<ListItem> = app.fake_logs
+        .iter()
+        .cycle() // Infinite scroll effect
+        .take(50) // Just take enough to fill screen
+        .map(|log| {
+             let style = if log.contains("ERROR") {
+                 Style::default().fg(Color::Red)
+             } else if log.contains("WARN") {
+                 Style::default().fg(Color::Yellow)
+             } else {
+                 Style::default().fg(Color::Green) // "Matrix" look or standard terminal green
+             };
+             ListItem::new(Span::styled(log, style))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::NONE).style(Style::default().bg(Color::Black)));
+
+    f.render_widget(list, area);
+}
+
 fn draw_quiz(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let block = Block::default().title(" Quiz ").borders(Borders::ALL);
     f.render_widget(block.clone(), area);
@@ -65,22 +92,23 @@ fn draw_quiz(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(30), // Kana
+                Constraint::Percentage(40), // Question (larger for vocab)
                 Constraint::Length(3),      // Input
                 Constraint::Length(3),      // Feedback
                 Constraint::Min(0),
             ].as_ref())
             .split(inner_area);
 
-        // Kana
-        let kana_p = Paragraph::new(Span::styled(
-            &card.kana_char,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        ))
-        .alignment(Alignment::Center)
-        .block(Block::default());
+        // Question
+        // Handle multiline question (e.g. Kanji \n Meaning)
+        let question_text = card.question.clone();
 
-        f.render_widget(kana_p, chunks[0]);
+        let q_p = Paragraph::new(question_text)
+            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            .alignment(Alignment::Center)
+            .block(Block::default());
+
+        f.render_widget(q_p, chunks[0]);
 
         // Input
         let input_text = format!("Answer: {}", app.user_input);
