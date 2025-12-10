@@ -8,6 +8,7 @@ use rand::thread_rng;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
+use tokio::sync::mpsc::UnboundedSender;
 
 #[cfg(test)]
 #[path = "app_tests.rs"]
@@ -18,6 +19,19 @@ pub enum CurrentScreen {
     Menu,
     Dashboard,
     Quiz,
+}
+
+#[derive(PartialEq, Clone)]
+pub enum AiStatus {
+    Idle,
+    Thinking,
+    Ready,
+    Offline,
+    Error(String),
+}
+
+pub enum AiRequest {
+    ExplainMistake { correct: String, input: String },
 }
 
 pub struct App {
@@ -34,10 +48,15 @@ pub struct App {
     pub menu_selection: usize, // 0: Dashboard, 1: Hiragana, 2: Katakana, 3: Mixed
     pub user_progress: HashMap<String, UserProgress>,
     pub due_items: Vec<String>,
+
+    // AI Integration
+    pub ai_sender: Option<UnboundedSender<AiRequest>>,
+    pub ai_status: AiStatus,
+    pub ai_explanation: String,
 }
 
 impl App {
-    pub fn new() -> App {
+    pub fn new(ai_sender: Option<UnboundedSender<AiRequest>>) -> App {
         let mut app = App {
             current_screen: CurrentScreen::Menu,
             kana_set: KanaSet::Hiragana,
@@ -52,9 +71,18 @@ impl App {
             menu_selection: 0,
             user_progress: HashMap::new(),
             due_items: Vec::new(),
+            ai_sender,
+            ai_status: AiStatus::Idle,
+            ai_explanation: String::new(),
         };
         app.load_progress();
         app.calculate_due_items();
+
+        // If no sender (offline mode), set status to Offline
+        if app.ai_sender.is_none() {
+            app.ai_status = AiStatus::Offline;
+        }
+
         app
     }
 
@@ -75,7 +103,6 @@ impl App {
     }
 
     pub fn calculate_due_items(&mut self) {
-        // Collect all available kanas
         let all_kanas = KanaSet::Mixed.get_data();
         let now = Utc::now();
 
@@ -86,10 +113,6 @@ impl App {
                     self.due_items.push(kana.character.clone());
                 }
             } else {
-                // If no progress, it's new, so it's "due" (or part of the new pool)
-                // For this app, let's say unknown items are available for review if we are in learning mode,
-                // but for "Due Items" list in Dashboard, we might only list those that were already seen?
-                // Or maybe list everything. Let's list everything "New" or "Due".
                 self.due_items.push(kana.character.clone());
             }
         }
@@ -100,15 +123,8 @@ impl App {
             1 => KanaSet::Hiragana,
             2 => KanaSet::Katakana,
             3 => KanaSet::Mixed,
-            _ => KanaSet::Mixed, // Default
+            _ => KanaSet::Mixed,
         };
-
-        // Filter pool based on SRS if in dashboard mode or just generally?
-        // The prompt says: "Update start_quiz to filter questions based on next_review_date"
-        // But also we have specific modes.
-        // If the user selects "Hiragana", should we show ALL Hiragana or only DUE Hiragana?
-        // Let's assume standard quiz modes (Hiragana/Katakana/Mixed) include BOTH due items and new items,
-        // prioritizing due items.
 
         let all_kanas = self.kana_set.get_data();
         let now = Utc::now();
@@ -129,17 +145,8 @@ impl App {
             }
         }
 
-        // Strategy: Mix Due + New.
-        // If we have due items, prioritize them.
-        // If we don't have enough due items, add new items.
-        // If we have neither, maybe review items that are coming up soon? Or just random practice?
-        // Let's make the pool = Due + New.
         self.pool = [due, new_items].concat();
 
-        // If pool is empty (completed everything for today), maybe allow reviewing "future" items?
-        // Or just tell the user "Good job".
-        // For a "Quiz App", preventing play might be annoying.
-        // Let's fallback to "review_later" if pool is empty, but maybe mark them as "cramming"?
         if self.pool.is_empty() && !review_later.is_empty() {
             self.pool = review_later;
         }
@@ -158,6 +165,16 @@ impl App {
         }
         self.user_input.clear();
         self.feedback = None;
+        self.reset_ai_state(); // Clear previous explanation
+    }
+
+    fn reset_ai_state(&mut self) {
+        if let AiStatus::Offline = self.ai_status {
+            // Keep Offline status
+        } else {
+            self.ai_status = AiStatus::Idle;
+        }
+        self.ai_explanation.clear();
     }
 
     pub fn check_answer(&mut self) {
@@ -171,8 +188,7 @@ impl App {
                 self.score += 1;
                 self.streak += 1;
 
-                // Update SRS
-                let grade = 5; // Perfect
+                let grade = 5;
                 let current_progress = self.user_progress.entry(kana.character.clone())
                     .or_insert_with(|| UserProgress::new(kana.character.clone()));
 
@@ -185,8 +201,16 @@ impl App {
                 self.feedback = Some(false);
                 self.streak = 0;
 
-                // Update SRS
-                let grade = 0; // Incorrect
+                // Request AI Explanation
+                if let Some(sender) = &self.ai_sender {
+                     let _ = sender.send(AiRequest::ExplainMistake {
+                         correct: kana.character.clone(),
+                         input: self.user_input.clone(),
+                     });
+                     self.ai_status = AiStatus::Thinking;
+                }
+
+                let grade = 0;
                 let current_progress = self.user_progress.entry(kana.character.clone())
                     .or_insert_with(|| UserProgress::new(kana.character.clone()));
 
@@ -206,14 +230,14 @@ impl App {
                     if self.menu_selection > 0 {
                         self.menu_selection -= 1;
                     } else {
-                        self.menu_selection = 3; // wrap
+                        self.menu_selection = 3;
                     }
                 }
                 KeyCode::Down => {
                     if self.menu_selection < 3 {
                         self.menu_selection += 1;
                     } else {
-                        self.menu_selection = 0; // wrap
+                        self.menu_selection = 0;
                     }
                 }
                 KeyCode::Enter => {
@@ -233,8 +257,8 @@ impl App {
             CurrentScreen::Quiz => match key_event.code {
                 KeyCode::Esc => {
                     self.current_screen = CurrentScreen::Menu;
-                    self.pool.clear(); // cleanup
-                    self.calculate_due_items(); // Update due items count
+                    self.pool.clear();
+                    self.calculate_due_items();
                 }
                 KeyCode::Enter => {
                     if self.feedback.is_some() {
