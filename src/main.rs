@@ -1,5 +1,7 @@
 mod app;
 mod data;
+mod models;
+mod srs;
 mod tui;
 mod ui;
 
@@ -16,7 +18,7 @@ fn main() -> Result<()> {
 
     let res = run_app(&mut terminal, &mut app);
 
-    // terminal dropped here
+    tui::restore()?; // Ensure terminal is restored properly
 
     if let Err(err) = res {
         println!("{:?}", err);

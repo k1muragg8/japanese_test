@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn test_new_app_state() {
     let app = App::new();
+    // In new version, initial screen is Menu, selection 0 is dashboard, but actually defaults to 0.
     assert!(matches!(app.current_screen, CurrentScreen::Menu));
     assert_eq!(app.score, 0);
     assert_eq!(app.menu_selection, 0);
@@ -11,6 +12,8 @@ fn test_new_app_state() {
 #[test]
 fn test_start_quiz() {
     let mut app = App::new();
+    // Simulate selecting Hiragana (selection 1)
+    app.menu_selection = 1;
     app.start_quiz();
     assert!(matches!(app.current_screen, CurrentScreen::Quiz));
     assert!(app.current_kana.is_some());
@@ -20,9 +23,11 @@ fn test_start_quiz() {
 #[test]
 fn test_correct_answer() {
     let mut app = App::new();
+    app.menu_selection = 1;
     app.start_quiz();
     let kana = app.current_kana.as_ref().unwrap().clone();
-    app.user_input = kana.romaji.to_string();
+    // Use the first valid romaji
+    app.user_input = kana.romaji[0].clone();
     app.check_answer();
 
     assert_eq!(app.feedback, Some(true));
@@ -33,6 +38,7 @@ fn test_correct_answer() {
 #[test]
 fn test_incorrect_answer() {
     let mut app = App::new();
+    app.menu_selection = 1;
     app.start_quiz();
     app.user_input = "wrong".to_string();
     app.check_answer();
@@ -46,6 +52,8 @@ fn test_incorrect_answer() {
 fn test_menu_navigation() {
     let mut app = App::new();
 
+    // Menu has 4 options now: 0: Dashboard, 1: Hiragana, 2: Katakana, 3: Mixed
+
     // Down from 0 -> 1
     app.handle_key_event(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Down));
     assert_eq!(app.menu_selection, 1);
@@ -54,11 +62,15 @@ fn test_menu_navigation() {
     app.handle_key_event(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Down));
     assert_eq!(app.menu_selection, 2);
 
-    // Down from 2 -> 0 (wrap)
+    // Down from 2 -> 3
+    app.handle_key_event(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Down));
+    assert_eq!(app.menu_selection, 3);
+
+    // Down from 3 -> 0 (wrap)
     app.handle_key_event(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Down));
     assert_eq!(app.menu_selection, 0);
 
-    // Up from 0 -> 2 (wrap)
+    // Up from 0 -> 3 (wrap)
     app.handle_key_event(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Up));
-    assert_eq!(app.menu_selection, 2);
+    assert_eq!(app.menu_selection, 3);
 }
