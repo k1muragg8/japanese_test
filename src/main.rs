@@ -1,5 +1,7 @@
 mod app;
 mod data;
+mod models;
+mod srs;
 mod tui;
 mod ui;
 
