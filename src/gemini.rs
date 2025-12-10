@@ -38,10 +38,10 @@ impl GeminiClient {
         }
     }
 
-    pub async fn explain_mistake(&self, correct: &str, input: &str) -> Result<String> {
+    pub async fn fetch_explanation(&self, correct_kana: &str, correct_romaji: &str, user_input: &str) -> Result<String> {
         let prompt = format!(
-            "You are a Japanese tutor. The user confused '{}' with '{}'. Explain the difference in Chinese (zh-CN) briefly and give one example word.",
-            correct, input
+            "You are a Japanese teacher. The user confused '{}' ({}) with '{}'. Explain the difference in Simplified Chinese (zh-CN) in less than 50 words and provide one common word using this Kana.",
+            correct_kana, correct_romaji, user_input
         );
 
         let body = json!({

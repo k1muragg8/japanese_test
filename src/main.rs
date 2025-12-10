@@ -1,110 +1,124 @@
 mod app;
 mod data;
+mod db;
 mod gemini;
-mod models;
-mod srs;
-mod tui;
 mod ui;
 
-use app::{App, AiRequest, AiStatus};
-use gemini::GeminiClient;
+use app::{Action, AiStatus, App};
 use color_eyre::eyre::Result;
-use crossterm::event::{self, Event};
+use crossterm::{
+    event::{self, Event},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use db::{init_db, seed_database_if_empty};
+use dotenvy::dotenv;
+use gemini::GeminiClient;
+use ratatui::{backend::CrosstermBackend, Terminal};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use std::env;
+use std::io::stdout;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use std::env;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
+    let _ = dotenv();
 
-    // Load .env
-    let _ = dotenvy::dotenv(); // Ignore error if file not found
+    // Database Setup
+    let pool = SqlitePoolOptions::new()
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename("kana.db")
+                .create_if_missing(true),
+        )
+        .await?;
+
+    init_db(&pool).await?;
+    seed_database_if_empty(&pool).await?;
+
+    // AI Setup
     let api_key = env::var("GEMINI_API_KEY").ok();
-
-    // Channel for UI to talk to AI
-    let (tx, mut rx) = mpsc::unbounded_channel::<AiRequest>();
-
-    // Channel for AI to talk to UI (Explanation received)
+    let (tx, mut rx) = mpsc::unbounded_channel::<(String, String, String)>();
     let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<Result<String, String>>();
 
-    // Spawn AI Task
     let ai_api_key = api_key.clone();
     tokio::spawn(async move {
         if let Some(key) = ai_api_key {
             let client = GeminiClient::new(key);
-            while let Some(req) = rx.recv().await {
-                match req {
-                    AiRequest::ExplainMistake { correct, input } => {
-                        let res = client.explain_mistake(&correct, &input).await;
-                        match res {
-                            Ok(explanation) => {
-                                let _ = resp_tx.send(Ok(explanation));
-                            }
-                            Err(e) => {
-                                let _ = resp_tx.send(Err(e.to_string()));
-                            }
-                        }
+            while let Some((kana, romaji, input)) = rx.recv().await {
+                match client.fetch_explanation(&kana, &romaji, &input).await {
+                    Ok(text) => {
+                        let _ = resp_tx.send(Ok(text));
+                    }
+                    Err(e) => {
+                        let _ = resp_tx.send(Err(e.to_string()));
                     }
                 }
-            }
-        } else {
-            // No API Key, consume channel but do nothing or send error if requested?
-            // The App knows it's offline, so it might not send requests.
-            // But if it does, we just drop them or handle gracefully.
-            while let Some(_) = rx.recv().await {
-                // Do nothing
             }
         }
     });
 
-    let mut terminal = tui::init()?;
-    // If no API key, pass None to App so it knows it is offline
+    // Terminal Setup
+    enable_raw_mode()?;
+    let mut stdout = stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // App Setup
     let app_sender = if api_key.is_some() { Some(tx) } else { None };
-    let mut app = App::new(app_sender);
+    let mut app = App::new(pool.clone(), app_sender);
 
-    let res = run_app(&mut terminal, &mut app, &mut resp_rx).await;
+    // Initial fetch
+    app.refresh_dashboard().await;
 
-    terminal.clear()?;
-    tui::restore()?;
+    // Main Loop
+    let res = run_loop(&mut terminal, &mut app, &mut resp_rx).await;
 
-    if let Err(err) = res {
-        println!("{:?}", err);
+    // Cleanup
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    if let Err(e) = res {
+        eprintln!("Error: {:?}", e);
     }
 
     Ok(())
 }
 
-async fn run_app(
-    terminal: &mut tui::Tui,
+async fn run_loop(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
-    resp_rx: &mut mpsc::UnboundedReceiver<Result<String, String>>
+    resp_rx: &mut mpsc::UnboundedReceiver<Result<String, String>>,
 ) -> Result<()> {
     loop {
-        terminal.draw(|frame| ui::render(app, frame))?;
+        terminal.draw(|f| ui::render(app, f))?;
 
-        if app.exit {
-            return Ok(());
-        }
-
-        // Poll for input events
-        if event::poll(Duration::from_millis(16))? {
-            if let Event::Key(key) = event::read()? {
-                app.handle_key_event(key);
+        // 1. Check for AI responses
+        while let Ok(res) = resp_rx.try_recv() {
+            match res {
+                Ok(text) => {
+                    app.ai_explanation = text;
+                    app.ai_status = AiStatus::Ready;
+                }
+                Err(e) => {
+                    app.ai_status = AiStatus::Error(e);
+                }
             }
         }
 
-        // Check for AI responses
-        while let Ok(response) = resp_rx.try_recv() {
-            match response {
-                Ok(explanation) => {
-                    app.ai_explanation = explanation;
-                    app.ai_status = AiStatus::Ready;
-                }
-                Err(err) => {
-                    app.ai_status = AiStatus::Error(err);
+        // 2. Handle Input
+        if event::poll(Duration::from_millis(16))? {
+            if let Event::Key(key) = event::read()? {
+                match app.handle_input(key).await {
+                    Action::Quit => break,
+                    _ => {}
                 }
             }
         }
     }
+    Ok(())
 }
