@@ -90,7 +90,7 @@ impl App {
                 self.feedback_detail = "回答正确！".to_string();
             }
         } else {
-            self.current_feedback = Some(format!("Incorrect. Correct: {}", card.romaji));
+            self.current_feedback = Some(format!("Wrong! Correct was: {}", card.romaji));
 
             // Generate Feedback using local logic
             let front_text = card.kana_char.clone();

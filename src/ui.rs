@@ -1,8 +1,8 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Alignment},
+    layout::{Constraint, Direction, Layout, Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Span, Line},
-    widgets::{Block, Borders, Paragraph, Wrap, List, ListItem},
+    widgets::{Block, Borders, Paragraph, List, ListItem, Wrap},
     Frame,
 };
 use crate::app::{App, AppState};
@@ -12,39 +12,45 @@ pub fn ui(f: &mut Frame, app: &App) {
 
     match app.state {
         AppState::Dashboard => draw_dashboard(f, app, size),
-        AppState::Quiz => {
-            let infinite_str = if app.due_count <= 0 { " (Infinite Mode)" } else { "" };
-            let title = format!(
-                " Quiz - Kana - Time: {}{} ",
-                format_duration(app.session_start.elapsed()),
-                infinite_str
-            );
-
-            let main_chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-                .split(size);
-
-            // Left: Quiz
-            draw_quiz(f, app, main_chunks[0], &title);
-
-            // Right: Feedback / Assistant
-            draw_assistant(f, app, main_chunks[1]);
-        }
+        AppState::Quiz => draw_quiz(f, app, size),
         AppState::FakeLog => draw_fake_log(f, app, size),
     }
 }
 
-fn draw_dashboard(f: &mut Frame, app: &App, size: ratatui::layout::Rect) {
-    let title = format!(" Kana Tutor - Time: {} ", format_duration(app.session_start.elapsed()));
+/// Helper function to create a centered rect using up certain percentage of the available rect `r`
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ].as_ref())
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ].as_ref())
+        .split(popup_layout[1])[1]
+}
+
+fn draw_dashboard(f: &mut Frame, app: &App, size: Rect) {
+    let area = centered_rect(60, 50, size);
+
+    let title = " Kana Tutor ";
     let block = Block::default()
         .title(title)
-        .borders(Borders::ALL);
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
 
     let welcome_msg = if app.due_count > 0 {
-        format!("欢迎回来！今天有 {} 个项目需要复习。", app.due_count)
+        format!("Welcome! Reviews Due: {}", app.due_count)
     } else {
-        "今日任务已完成！(Mission Complete! Entering Infinite Mode...)".to_string()
+        "All Reviews Done! (Infinite Mode Available)".to_string()
     };
 
     let text = vec![
@@ -53,25 +59,142 @@ fn draw_dashboard(f: &mut Frame, app: &App, size: ratatui::layout::Rect) {
             Style::default().fg(if app.due_count > 0 { Color::Green } else { Color::Cyan }).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from("按 Enter 开始复习 (Press Enter to start)"),
-        Line::from("按 F10 开启隐蔽模式 (Stealth Mode)"),
-        Line::from("按 q 退出 (Press q to quit)"),
+        Line::from("Press [Enter] to Start"),
+        Line::from("Press [F10] for Boss Mode"),
+        Line::from("Press [q] to Quit"),
     ];
 
     let p = Paragraph::new(text)
         .block(block)
-        .alignment(Alignment::Center);
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true });
 
-    // Center vert/horiz
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(20), Constraint::Percentage(40)].as_ref())
-        .split(size);
-
-    f.render_widget(p, chunks[1]);
+    f.render_widget(p, area);
 }
 
-fn draw_fake_log(f: &mut Frame, app: &App, size: ratatui::layout::Rect) {
+fn draw_quiz(f: &mut Frame, app: &App, size: Rect) {
+    // 1. Top Block: Title + Session Timer
+    let infinite_str = if app.due_count <= 0 { " (Infinite Mode)" } else { "" };
+    let title_text = format!(
+        " Kana Tutor | Time: {}{} ",
+        format_duration(app.session_start.elapsed()),
+        infinite_str
+    );
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Min(0),    // Main Content
+        ].as_ref())
+        .split(size);
+
+    let title_p = Paragraph::new(title_text)
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(title_p, chunks[0]);
+
+    // 2. Middle (The Card) - Centered Area
+    // Use 60% width, 50% height of the remaining space
+    let center_area = centered_rect(60, 50, chunks[1]);
+
+    // Within the center area, we split into Card (Top) and Interaction (Bottom)
+    let card_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(60), // The Kana
+            Constraint::Percentage(40), // Input / Feedback
+        ].as_ref())
+        .split(center_area);
+
+    if app.current_card_index < app.due_cards.len() {
+        let card = &app.due_cards[app.current_card_index];
+
+        // Draw Kana
+        // We want it vertically centered in its chunk too, so let's use a Paragraph with newline padding or alignment?
+        // Ratatui Paragraph doesn't vertically align easily without constraints.
+        // Let's just use a Block for the border, and render text inside.
+
+        let kana_block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Kana ");
+
+        // To make text "LARGE", we can't really change font size in TUI, but we can make it BOLD and colored.
+        // We can also center it.
+        // Let's try to center the text vertically by adding empty lines.
+        let empty_lines = card_chunks[0].height.saturating_sub(3) / 2; // rough estimate
+        let mut kana_text = vec![];
+        for _ in 0..empty_lines {
+            kana_text.push(Line::from(""));
+        }
+        kana_text.push(Line::from(Span::styled(
+            &card.kana_char,
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        )));
+
+        let kana_p = Paragraph::new(kana_text)
+            .block(kana_block)
+            .alignment(Alignment::Center);
+
+        f.render_widget(kana_p, card_chunks[0]);
+
+        // Draw Interaction
+        let interaction_block = Block::default().borders(Borders::NONE);
+        let inner_interaction = interaction_block.inner(card_chunks[1]);
+
+        if let Some(feedback) = &app.current_feedback {
+            // RESULT STATE
+            let color = if feedback == "Correct!" { Color::Green } else { Color::Red };
+
+            let mut feedback_lines = vec![
+                Line::from(Span::styled(feedback, Style::default().fg(color).add_modifier(Modifier::BOLD))),
+                Line::from(""),
+            ];
+
+            // Add detailed feedback if available (e.g. "Next review: 2 days")
+            if !app.feedback_detail.is_empty() {
+                // Split by newline to handle multi-line details
+                for line in app.feedback_detail.lines() {
+                    feedback_lines.push(Line::from(Span::styled(line, Style::default().fg(Color::Gray))));
+                }
+                feedback_lines.push(Line::from(""));
+            }
+
+            feedback_lines.push(Line::from(Span::styled("(Press Enter to continue)", Style::default().fg(Color::DarkGray))));
+
+            let feedback_p = Paragraph::new(feedback_lines)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true });
+
+            f.render_widget(feedback_p, inner_interaction);
+
+        } else {
+            // QUIZ STATE
+            let input_block = Block::default()
+                .title(" Enter Romaji ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::White));
+
+            let input_p = Paragraph::new(app.user_input.as_str())
+                .block(input_block)
+                .alignment(Alignment::Center);
+
+            // Vertically center the input box within the bottom half
+            let input_area = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Spacer
+                    Constraint::Length(3), // Box height
+                    Constraint::Min(0),
+                ].as_ref())
+                .split(inner_interaction);
+
+            f.render_widget(input_p, input_area[1]);
+        }
+    }
+}
+
+fn draw_fake_log(f: &mut Frame, app: &App, size: Rect) {
     let items: Vec<ListItem> = app.fake_logs
         .iter()
         .map(|line| {
@@ -93,58 +216,6 @@ fn draw_fake_log(f: &mut Frame, app: &App, size: ratatui::layout::Rect) {
     f.render_widget(list, size);
 }
 
-fn draw_quiz(f: &mut Frame, app: &App, area: ratatui::layout::Rect, title: &str) {
-    let block = Block::default().title(title).borders(Borders::ALL);
-    f.render_widget(block.clone(), area);
-
-    let inner_area = block.inner(area);
-
-    if app.current_card_index < app.due_cards.len() {
-        let card = &app.due_cards[app.current_card_index];
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(40), // Question (Kana)
-                Constraint::Length(3),      // Input
-                Constraint::Length(3),      // Feedback
-                Constraint::Min(0),
-            ].as_ref())
-            .split(inner_area);
-
-        // Render Question
-        let question_text = vec![Line::from(Span::styled(
-            &card.kana_char,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        ))];
-
-        let question_p = Paragraph::new(question_text)
-            .alignment(Alignment::Center)
-            .block(Block::default());
-
-        f.render_widget(question_p, chunks[0]);
-
-        // Input
-        let input_text = format!("Answer: {}", app.user_input);
-        let input_p = Paragraph::new(input_text)
-            .block(Block::default().borders(Borders::ALL).title(" Romaji "));
-        f.render_widget(input_p, chunks[1]);
-
-        // Feedback
-        if let Some(feedback) = &app.current_feedback {
-            let color = if feedback == "Correct!" { Color::Green } else { Color::Red };
-            let fb_p = Paragraph::new(Span::styled(feedback, Style::default().fg(color)))
-                .alignment(Alignment::Center);
-            f.render_widget(fb_p, chunks[2]);
-
-            let hint = Paragraph::new("Press Enter to continue")
-                .style(Style::default().fg(Color::Gray))
-                .alignment(Alignment::Center);
-            f.render_widget(hint, chunks[3]);
-        }
-    }
-}
-
 fn format_duration(d: std::time::Duration) -> String {
     let total_seconds = d.as_secs();
     let hours = total_seconds / 3600;
@@ -155,20 +226,4 @@ fn format_duration(d: std::time::Duration) -> String {
     } else {
         format!("{:02}:{:02}", minutes, seconds)
     }
-}
-
-fn draw_assistant(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let block = Block::default().title(" 学习助手 (Study Assistant) ").borders(Borders::ALL);
-
-    let text = if !app.feedback_detail.is_empty() {
-        app.feedback_detail.clone()
-    } else {
-        "在此显示反馈和提示...".to_string()
-    };
-
-    let p = Paragraph::new(text)
-        .block(block)
-        .wrap(Wrap { trim: true });
-
-    f.render_widget(p, area);
 }
