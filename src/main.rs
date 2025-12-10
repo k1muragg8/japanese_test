@@ -1,72 +1,46 @@
-mod app;
-mod data;
-mod gemini;
-mod models;
-mod srs;
-mod tui;
-mod ui;
-
-use app::{App, AiRequest, AiStatus};
-use gemini::GeminiClient;
-use color_eyre::eyre::Result;
-use crossterm::event::{self, Event};
+use std::io;
 use std::time::Duration;
-use tokio::sync::mpsc;
-use std::env;
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{backend::CrosstermBackend, Terminal};
+
+mod app;
+mod db;
+mod feedback;
+mod ui;
+mod data;
+
+use app::{App, AppState};
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    color_eyre::install()?;
+async fn main() -> anyhow::Result<()> {
+    // Logging (optional)
+    // env_logger::init();
 
-    // Load .env
-    let _ = dotenvy::dotenv(); // Ignore error if file not found
-    let api_key = env::var("GEMINI_API_KEY").ok();
+    // Initialize App (DB connection, Migration, Seeding)
+    let mut app = App::new().await?;
 
-    // Channel for UI to talk to AI
-    let (tx, mut rx) = mpsc::unbounded_channel::<AiRequest>();
+    // TUI Setup
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
 
-    // Channel for AI to talk to UI (Explanation received)
-    let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<Result<String, String>>();
+    // Main Loop
+    let res = run_app(&mut terminal, &mut app).await;
 
-    // Spawn AI Task
-    let ai_api_key = api_key.clone();
-    tokio::spawn(async move {
-        if let Some(key) = ai_api_key {
-            let client = GeminiClient::new(key);
-            while let Some(req) = rx.recv().await {
-                match req {
-                    AiRequest::ExplainMistake { correct, input } => {
-                        let res = client.explain_mistake(&correct, &input).await;
-                        match res {
-                            Ok(explanation) => {
-                                let _ = resp_tx.send(Ok(explanation));
-                            }
-                            Err(e) => {
-                                let _ = resp_tx.send(Err(e.to_string()));
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            // No API Key, consume channel but do nothing or send error if requested?
-            // The App knows it's offline, so it might not send requests.
-            // But if it does, we just drop them or handle gracefully.
-            while let Some(_) = rx.recv().await {
-                // Do nothing
-            }
-        }
-    });
-
-    let mut terminal = tui::init()?;
-    // If no API key, pass None to App so it knows it is offline
-    let app_sender = if api_key.is_some() { Some(tx) } else { None };
-    let mut app = App::new(app_sender);
-
-    let res = run_app(&mut terminal, &mut app, &mut resp_rx).await;
-
-    terminal.clear()?;
-    tui::restore()?;
+    // Graceful Shutdown
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
 
     if let Err(err) = res {
         println!("{:?}", err);
@@ -75,36 +49,64 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_app(
-    terminal: &mut tui::Tui,
-    app: &mut App,
-    resp_rx: &mut mpsc::UnboundedReceiver<Result<String, String>>
-) -> Result<()> {
+async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+    let tick_rate = Duration::from_millis(250);
+    let mut last_tick = std::time::Instant::now();
+
     loop {
-        terminal.draw(|frame| ui::render(app, frame))?;
+        terminal.draw(|f| ui::ui(f, app))?;
 
-        if app.exit {
-            return Ok(());
-        }
+        let timeout = tick_rate
+            .checked_sub(last_tick.elapsed())
+            .unwrap_or_else(|| Duration::from_secs(0));
 
-        // Poll for input events
-        if event::poll(Duration::from_millis(16))? {
+        if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
-                app.handle_key_event(key);
+                // Global quit
+                if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
+                    return Ok(());
+                }
+
+                match app.state {
+                    AppState::Dashboard => {
+                         if key.code == KeyCode::Enter {
+                             app.start_quiz().await;
+                         }
+                    }
+                    AppState::Quiz => {
+                         // Check input handling
+                         match key.code {
+                             KeyCode::Enter => {
+                                 // Submit
+                                 app.submit_answer().await;
+                             }
+                             KeyCode::Char(' ') => {
+                                 // Continue if result shown
+                                 if app.current_feedback.is_some() {
+                                     app.next_card().await;
+                                 } else {
+                                     // Treat space as input char
+                                     app.handle_input_char(' ');
+                                 }
+                             }
+                             KeyCode::Backspace => {
+                                 app.handle_backspace();
+                             }
+                             KeyCode::Char(c) => {
+                                 // Only handle chars if feedback not shown (locked)
+                                 if app.current_feedback.is_none() {
+                                     app.handle_input_char(c);
+                                 }
+                             }
+                             _ => {}
+                         }
+                    }
+                }
             }
         }
 
-        // Check for AI responses
-        while let Ok(response) = resp_rx.try_recv() {
-            match response {
-                Ok(explanation) => {
-                    app.ai_explanation = explanation;
-                    app.ai_status = AiStatus::Ready;
-                }
-                Err(err) => {
-                    app.ai_status = AiStatus::Error(err);
-                }
-            }
+        if last_tick.elapsed() >= tick_rate {
+            last_tick = std::time::Instant::now();
         }
     }
 }
