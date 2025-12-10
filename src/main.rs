@@ -68,10 +68,8 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: 
                 // If in FakeLog, ignore most inputs except quit or toggle
                 if let AppState::FakeLog = app.state {
                     if key.code == KeyCode::Char('q') {
-                         return Ok(()); // Allow quit from fake log? Or should it be stealthy?
-                         // "Boss Key" usually hides what you are doing. Quitting is fine.
+                         return Ok(());
                     }
-                    // Other keys are ignored or consumed
                     continue;
                 }
 
@@ -85,9 +83,7 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: 
                              KeyCode::Enter => {
                                  app.start_quiz().await;
                              }
-                             KeyCode::Char('m') => {
-                                 app.toggle_mode();
-                             }
+                             // Removed 'm' keybind for mode toggle
                              _ => {}
                          }
                     }
@@ -100,17 +96,10 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: 
                                      app.submit_answer().await;
                                  }
                              }
-                             // Retain Space as an alternative for next_card for legacy support if desired,
-                             // but the requirement says Enter is the UNIVERSAL action key.
-                             // Space was used for next card. We can keep it or remove it.
-                             // "Pressing Enter (instead of Space/Any) transitions to the Next Question"
-                             // Let's keep Space as a fallback for 'Next' but remove it for input unless needed?
-                             // But user might type space in answer? Romaji usually doesn't have space.
                              KeyCode::Char(' ') => {
                                  if app.current_feedback.is_some() {
                                      app.next_card().await;
                                  } else {
-                                     // Allow typing space if needed, though unlikely for single word romaji
                                      app.handle_input_char(' ');
                                  }
                              }

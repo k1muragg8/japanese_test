@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap, List, ListItem},
     Frame,
 };
-use crate::app::{App, AppState, QuizMode};
+use crate::app::{App, AppState};
 
 pub fn ui(f: &mut Frame, app: &App) {
     let size = f.area();
@@ -13,15 +13,9 @@ pub fn ui(f: &mut Frame, app: &App) {
     match app.state {
         AppState::Dashboard => draw_dashboard(f, app, size),
         AppState::Quiz => {
-            let mode_str = match app.quiz_mode {
-                QuizMode::Kana => "Kana",
-                QuizMode::Vocab => "Vocab",
-                QuizMode::Mixed => "Mixed",
-            };
             let infinite_str = if app.due_count <= 0 { " (Infinite Mode)" } else { "" };
             let title = format!(
-                " Quiz - {} - Time: {}{} ",
-                mode_str,
+                " Quiz - Kana - Time: {}{} ",
                 format_duration(app.session_start.elapsed()),
                 infinite_str
             );
@@ -47,12 +41,6 @@ fn draw_dashboard(f: &mut Frame, app: &App, size: ratatui::layout::Rect) {
         .title(title)
         .borders(Borders::ALL);
 
-    let mode_str = match app.quiz_mode {
-        QuizMode::Kana => "Kana Only",
-        QuizMode::Vocab => "Vocabulary Only",
-        QuizMode::Mixed => "Mixed Mode",
-    };
-
     let welcome_msg = if app.due_count > 0 {
         format!("欢迎回来！今天有 {} 个项目需要复习。", app.due_count)
     } else {
@@ -64,8 +52,6 @@ fn draw_dashboard(f: &mut Frame, app: &App, size: ratatui::layout::Rect) {
             welcome_msg,
             Style::default().fg(if app.due_count > 0 { Color::Green } else { Color::Cyan }).add_modifier(Modifier::BOLD),
         )),
-        Line::from(""),
-        Line::from(format!("当前模式 (Current Mode): {} (Press 'm' to switch)", mode_str)),
         Line::from(""),
         Line::from("按 Enter 开始复习 (Press Enter to start)"),
         Line::from("按 F10 开启隐蔽模式 (Stealth Mode)"),
@@ -119,7 +105,7 @@ fn draw_quiz(f: &mut Frame, app: &App, area: ratatui::layout::Rect, title: &str)
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(40), // Question (Kanji/Kana)
+                Constraint::Percentage(40), // Question (Kana)
                 Constraint::Length(3),      // Input
                 Constraint::Length(3),      // Feedback
                 Constraint::Min(0),
@@ -127,50 +113,10 @@ fn draw_quiz(f: &mut Frame, app: &App, area: ratatui::layout::Rect, title: &str)
             .split(inner_area);
 
         // Render Question
-        // If it's vocab, we show Kanji (if available) and maybe Meaning?
-        // Prompt says: "Display: If testing Vocabulary: Show word_kanji (if available) and word_kana."
-        // Wait, if we show word_kana, the user just types it?
-        // Usually vocab cards show Kanji and ask for reading (Kana) or Reading and ask for Meaning?
-        // The prompt says: "User input expects romaji."
-        // So we show Kanji/Kana and expect Romaji.
-        // If Kanji exists, show it. Maybe show Kana as a hint or hidden?
-        // "Show word_kanji (if available) and word_kana."
-        // This suggests showing both. If I show "猫 (ねこ)", the user types "neko".
-
-        let question_text = if card.is_vocab {
-            let mut text = vec![
-                Line::from(Span::styled(
-                    &card.kana_char, // This holds kanji if available, or kana
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                )),
-            ];
-
-            // If we have sub_text (word_kana) and it's different from main text
-            if let Some(sub) = &card.sub_text {
-                if sub != &card.kana_char {
-                    text.push(Line::from(Span::styled(
-                        format!("({})", sub),
-                        Style::default().fg(Color::Gray),
-                    )));
-                }
-            }
-
-            // Also show meaning? Prompt says "Show word_kanji ... and word_kana". Doesn't explicitly say meaning.
-            // But usually meaning is helpful. I'll add it if it's there.
-            if let Some(meaning) = &card.meaning {
-                 text.push(Line::from(Span::styled(
-                    format!("Meaning: {}", meaning),
-                    Style::default().fg(Color::Magenta),
-                )));
-            }
-            text
-        } else {
-             // Kana mode
-             vec![Line::from(Span::styled(
-                &card.kana_char,
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            ))]
-        };
+        let question_text = vec![Line::from(Span::styled(
+            &card.kana_char,
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ))];
 
         let question_p = Paragraph::new(question_text)
             .alignment(Alignment::Center)
