@@ -12,8 +12,9 @@ pub fn ui(f: &mut Frame, app: &App) {
 
     match app.state {
         AppState::Dashboard => {
+            let title = format!(" Kana Tutor - Time: {} ", format_duration(app.session_start.elapsed()));
             let block = Block::default()
-                .title(" Kana Tutor ")
+                .title(title)
                 .borders(Borders::ALL);
 
             let mode_str = match app.quiz_mode {
@@ -22,10 +23,16 @@ pub fn ui(f: &mut Frame, app: &App) {
                 QuizMode::Mixed => "Mixed Mode",
             };
 
+            let welcome_msg = if app.due_count > 0 {
+                format!("欢迎回来！今天有 {} 个项目需要复习。", app.due_count)
+            } else {
+                "今日任务已完成！(Mission Complete! Entering Infinite Mode...)".to_string()
+            };
+
             let text = vec![
                 Line::from(Span::styled(
-                    format!("欢迎回来！今天有 {} 个项目需要复习。", app.due_count),
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    welcome_msg,
+                    Style::default().fg(if app.due_count > 0 { Color::Green } else { Color::Cyan }).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(""),
                 Line::from(format!("当前模式 (Current Mode): {} (Press 'm' to switch)", mode_str)),
@@ -48,16 +55,26 @@ pub fn ui(f: &mut Frame, app: &App) {
             f.render_widget(p, chunks[1]);
         }
         AppState::Quiz => {
+            let title = format!(" Quiz - Time: {} ", format_duration(app.session_start.elapsed()));
             let chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(0), Constraint::Length(1)].as_ref())
                 .split(size);
 
+            let main_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                .split(chunks[0]);
+
+            // Timer at the top right of the whole screen? Or just in the block title?
+            // The previous block covered the whole screen if I'm not careful.
+            // Let's pass the title to draw_quiz
+
             // Left: Quiz
-            draw_quiz(f, app, chunks[0]);
+            draw_quiz(f, app, main_chunks[0], &title);
 
             // Right: Feedback / Assistant
-            draw_assistant(f, app, chunks[1]);
+            draw_assistant(f, app, main_chunks[1]);
         }
         AppState::FakeLog => {
             let items: Vec<ListItem> = app.fake_logs
@@ -83,8 +100,8 @@ pub fn ui(f: &mut Frame, app: &App) {
     }
 }
 
-fn draw_quiz(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let block = Block::default().title(" Quiz ").borders(Borders::ALL);
+fn draw_quiz(f: &mut Frame, app: &App, area: ratatui::layout::Rect, title: &str) {
+    let block = Block::default().title(title).borders(Borders::ALL);
     f.render_widget(block.clone(), area);
 
     let inner_area = block.inner(area);
@@ -167,11 +184,23 @@ fn draw_quiz(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 .alignment(Alignment::Center);
             f.render_widget(fb_p, chunks[2]);
 
-            let hint = Paragraph::new("Press Space to continue")
+            let hint = Paragraph::new("Press Enter to continue")
                 .style(Style::default().fg(Color::Gray))
                 .alignment(Alignment::Center);
             f.render_widget(hint, chunks[3]);
         }
+    }
+}
+
+fn format_duration(d: std::time::Duration) -> String {
+    let total_seconds = d.as_secs();
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    } else {
+        format!("{:02}:{:02}", minutes, seconds)
     }
 }
 

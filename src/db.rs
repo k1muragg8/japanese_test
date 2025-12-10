@@ -146,60 +146,111 @@ impl Db {
         Ok(())
     }
 
-    pub async fn get_due_cards(&self, mode: &str) -> anyhow::Result<Vec<Card>> {
+    pub async fn get_next_batch(&self, mode: &str) -> anyhow::Result<Vec<Card>> {
         let mut cards = Vec::new();
+        let limit_per_type = 20; // Fetch small batches
 
         // Mode: "kana", "vocab", "mixed"
         let fetch_kana = mode == "kana" || mode == "mixed";
         let fetch_vocab = mode == "vocab" || mode == "mixed";
 
         if fetch_kana {
-            let kana_cards = sqlx::query_as::<_, Card>(
-                r#"
-                SELECT
-                    kana_char as id,
-                    kana_char,
-                    romaji,
-                    interval,
-                    easiness,
-                    repetitions,
-                    next_review_date,
-                    0 as is_vocab,
-                    NULL as sub_text,
-                    NULL as meaning
-                FROM progress
-                WHERE next_review_date <= CURRENT_TIMESTAMP
-                "#
-            )
-            .fetch_all(&self.pool)
-            .await?;
+            let kana_cards = self.fetch_batch("progress", false, limit_per_type).await?;
             cards.extend(kana_cards);
         }
 
         if fetch_vocab {
-            let vocab_cards = sqlx::query_as::<_, Card>(
-                r#"
-                SELECT
-                    CAST(id AS TEXT) as id,
-                    COALESCE(word_kanji, word_kana) as kana_char,
-                    romaji,
-                    interval,
-                    easiness,
-                    repetitions,
-                    next_review_date,
-                    1 as is_vocab,
-                    word_kana as sub_text,
-                    meaning
-                FROM vocabulary
-                WHERE next_review_date <= CURRENT_TIMESTAMP
-                "#
-            )
-            .fetch_all(&self.pool)
-            .await?;
+            let vocab_cards = self.fetch_batch("vocabulary", true, limit_per_type).await?;
             cards.extend(vocab_cards);
         }
 
         Ok(cards)
+    }
+
+    async fn fetch_batch(&self, _table: &str, is_vocab: bool, limit: i64) -> anyhow::Result<Vec<Card>> {
+        let mut batch = Vec::new();
+
+        // Common select part
+        let select_clause = if is_vocab {
+            r#"
+            SELECT
+                CAST(id AS TEXT) as id,
+                COALESCE(word_kanji, word_kana) as kana_char,
+                romaji,
+                interval,
+                easiness,
+                repetitions,
+                next_review_date,
+                1 as is_vocab,
+                word_kana as sub_text,
+                meaning
+            FROM vocabulary
+            "#
+        } else {
+             r#"
+            SELECT
+                kana_char as id,
+                kana_char,
+                romaji,
+                interval,
+                easiness,
+                repetitions,
+                next_review_date,
+                0 as is_vocab,
+                NULL as sub_text,
+                NULL as meaning
+            FROM progress
+            "#
+        };
+
+        // Priority 1: Due Reviews (repetitions > 0 AND due)
+        let p1_query = format!("{} WHERE next_review_date <= CURRENT_TIMESTAMP AND repetitions > 0 LIMIT ?", select_clause);
+        let p1_cards = sqlx::query_as::<_, Card>(&p1_query)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        batch.extend(p1_cards);
+
+        if batch.len() < limit as usize {
+            let needed = limit - batch.len() as i64;
+            // Priority 2: New Cards (repetitions = 0)
+            let p2_query = format!("{} WHERE repetitions = 0 LIMIT ?", select_clause);
+            let p2_cards = sqlx::query_as::<_, Card>(&p2_query)
+                .bind(needed)
+                .fetch_all(&self.pool)
+                .await?;
+            batch.extend(p2_cards);
+        }
+
+        if batch.len() < limit as usize {
+            let needed = limit - batch.len() as i64;
+            // Priority 3: Review Ahead (Future)
+            // Ensure we don't pick up cards with repetitions=0 that might have a future date (unlikely but possible if manually edited)
+            // and exclude cards already picked (though P1 is <= NOW and P3 is > NOW, so no overlap there).
+            // P2 picked repetitions=0. If those had > NOW, they are in batch.
+            // So we should exclude repetitions=0 from P3 to be safe, or just assume P2 picked them all if they were relevant?
+            // If P2 limit was hit, we might have missed some rep=0 cards.
+            // If P3 picks them up, we get duplicates if they are already in batch.
+            // Actually, P1 is <= NOW. P3 is > NOW. No overlap between P1 and P3.
+            // P2 is rep=0. If rep=0 is <= NOW, it's in P1 range (if P1 included rep=0, but P1 is rep>0).
+            // So P2 (rep=0) cards could be <= NOW or > NOW.
+            // If P2 picked some cards, they are in `batch`.
+            // We want P3 to pick cards > NOW.
+            // If a rep=0 card is > NOW, it might be picked by P3.
+            // If it was ALREADY picked by P2, we have a duplicate.
+            // Solution: P3 should exclude repetitions=0 if P2 was run?
+            // Or simpler: P3 = WHERE next_review_date > CURRENT_TIMESTAMP AND repetitions > 0.
+            // This ensures P3 only picks "Learned" cards that are in the future.
+            // New cards (rep=0) are strictly P2's domain.
+            let p3_query = format!("{} WHERE next_review_date > CURRENT_TIMESTAMP AND repetitions > 0 ORDER BY next_review_date ASC LIMIT ?", select_clause);
+            let p3_cards = sqlx::query_as::<_, Card>(&p3_query)
+                .bind(needed)
+                .fetch_all(&self.pool)
+                .await?;
+            batch.extend(p3_cards);
+        }
+
+        Ok(batch)
     }
 
     pub async fn update_card(&self, id: &str, is_vocab: bool, correct: bool) -> anyhow::Result<i64> {

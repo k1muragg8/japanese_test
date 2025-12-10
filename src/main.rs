@@ -94,12 +94,23 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: 
                     AppState::Quiz => {
                          match key.code {
                              KeyCode::Enter => {
-                                 app.submit_answer().await;
+                                 if app.current_feedback.is_some() {
+                                     app.next_card().await;
+                                 } else {
+                                     app.submit_answer().await;
+                                 }
                              }
+                             // Retain Space as an alternative for next_card for legacy support if desired,
+                             // but the requirement says Enter is the UNIVERSAL action key.
+                             // Space was used for next card. We can keep it or remove it.
+                             // "Pressing Enter (instead of Space/Any) transitions to the Next Question"
+                             // Let's keep Space as a fallback for 'Next' but remove it for input unless needed?
+                             // But user might type space in answer? Romaji usually doesn't have space.
                              KeyCode::Char(' ') => {
                                  if app.current_feedback.is_some() {
                                      app.next_card().await;
                                  } else {
+                                     // Allow typing space if needed, though unlikely for single word romaji
                                      app.handle_input_char(' ');
                                  }
                              }
