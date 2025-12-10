@@ -11,64 +11,25 @@ pub fn ui(f: &mut Frame, app: &App) {
     let size = f.area();
 
     match app.state {
-        AppState::Dashboard => {
-            let title = format!(" Kana Tutor - Time: {} ", format_duration(app.session_start.elapsed()));
-            let block = Block::default()
-                .title(title)
-                .borders(Borders::ALL);
-
-            let mode_str = match app.quiz_mode {
-                QuizMode::Kana => "Kana Only",
-                QuizMode::Vocab => "Vocabulary Only",
-                QuizMode::Mixed => "Mixed Mode",
-            };
-
-            let welcome_msg = if app.due_count > 0 {
-                format!("欢迎回来！今天有 {} 个项目需要复习。", app.due_count)
-            } else {
-                "今日任务已完成！(Mission Complete! Entering Infinite Mode...)".to_string()
-            };
-
-            let text = vec![
-                Line::from(Span::styled(
-                    welcome_msg,
-                    Style::default().fg(if app.due_count > 0 { Color::Green } else { Color::Cyan }).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(""),
-                Line::from(format!("当前模式 (Current Mode): {} (Press 'm' to switch)", mode_str)),
-                Line::from(""),
-                Line::from("按 Enter 开始复习 (Press Enter to start)"),
-                Line::from("按 F10 开启隐蔽模式 (Stealth Mode)"),
-                Line::from("按 q 退出 (Press q to quit)"),
-            ];
-
-            let p = Paragraph::new(text)
-                .block(block)
-                .alignment(Alignment::Center);
-
-            // Center vert/horiz
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(40), Constraint::Percentage(20), Constraint::Percentage(40)].as_ref())
-                .split(size);
-
-            f.render_widget(p, chunks[1]);
-        }
+        AppState::Dashboard => draw_dashboard(f, app, size),
         AppState::Quiz => {
-            let title = format!(" Quiz - Time: {} ", format_duration(app.session_start.elapsed()));
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(1)].as_ref())
-                .split(size);
+            let mode_str = match app.quiz_mode {
+                QuizMode::Kana => "Kana",
+                QuizMode::Vocab => "Vocab",
+                QuizMode::Mixed => "Mixed",
+            };
+            let infinite_str = if app.due_count <= 0 { " (Infinite Mode)" } else { "" };
+            let title = format!(
+                " Quiz - {} - Time: {}{} ",
+                mode_str,
+                format_duration(app.session_start.elapsed()),
+                infinite_str
+            );
 
             let main_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-                .split(chunks[0]);
-
-            // Timer at the top right of the whole screen? Or just in the block title?
-            // The previous block covered the whole screen if I'm not careful.
-            // Let's pass the title to draw_quiz
+                .split(size);
 
             // Left: Quiz
             draw_quiz(f, app, main_chunks[0], &title);
@@ -76,28 +37,74 @@ pub fn ui(f: &mut Frame, app: &App) {
             // Right: Feedback / Assistant
             draw_assistant(f, app, main_chunks[1]);
         }
-        AppState::FakeLog => {
-            let items: Vec<ListItem> = app.fake_logs
-                .iter()
-                .map(|line| {
-                    let style = if line.contains("WARN") {
-                        Style::default().fg(Color::Yellow)
-                    } else if line.contains("ERROR") {
-                        Style::default().fg(Color::Red)
-                    } else {
-                        Style::default().fg(Color::Green)
-                    };
-                    ListItem::new(Line::from(Span::styled(line, style)))
-                })
-                .collect();
-
-            let list = List::new(items)
-                .block(Block::default().borders(Borders::NONE))
-                .style(Style::default().bg(Color::Black));
-
-            f.render_widget(list, size);
-        }
+        AppState::FakeLog => draw_fake_log(f, app, size),
     }
+}
+
+fn draw_dashboard(f: &mut Frame, app: &App, size: ratatui::layout::Rect) {
+    let title = format!(" Kana Tutor - Time: {} ", format_duration(app.session_start.elapsed()));
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL);
+
+    let mode_str = match app.quiz_mode {
+        QuizMode::Kana => "Kana Only",
+        QuizMode::Vocab => "Vocabulary Only",
+        QuizMode::Mixed => "Mixed Mode",
+    };
+
+    let welcome_msg = if app.due_count > 0 {
+        format!("欢迎回来！今天有 {} 个项目需要复习。", app.due_count)
+    } else {
+        "今日任务已完成！(Mission Complete! Entering Infinite Mode...)".to_string()
+    };
+
+    let text = vec![
+        Line::from(Span::styled(
+            welcome_msg,
+            Style::default().fg(if app.due_count > 0 { Color::Green } else { Color::Cyan }).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!("当前模式 (Current Mode): {} (Press 'm' to switch)", mode_str)),
+        Line::from(""),
+        Line::from("按 Enter 开始复习 (Press Enter to start)"),
+        Line::from("按 F10 开启隐蔽模式 (Stealth Mode)"),
+        Line::from("按 q 退出 (Press q to quit)"),
+    ];
+
+    let p = Paragraph::new(text)
+        .block(block)
+        .alignment(Alignment::Center);
+
+    // Center vert/horiz
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(20), Constraint::Percentage(40)].as_ref())
+        .split(size);
+
+    f.render_widget(p, chunks[1]);
+}
+
+fn draw_fake_log(f: &mut Frame, app: &App, size: ratatui::layout::Rect) {
+    let items: Vec<ListItem> = app.fake_logs
+        .iter()
+        .map(|line| {
+            let style = if line.contains("WARN") {
+                Style::default().fg(Color::Yellow)
+            } else if line.contains("ERROR") {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::Green)
+            };
+            ListItem::new(Line::from(Span::styled(line, style)))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::NONE))
+        .style(Style::default().bg(Color::Black));
+
+    f.render_widget(list, size);
 }
 
 fn draw_quiz(f: &mut Frame, app: &App, area: ratatui::layout::Rect, title: &str) {
