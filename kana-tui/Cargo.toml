@@ -1,0 +1,13 @@
+[package]
+name = "kana-tui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ratatui = "0.29.0"
+crossterm = "0.28.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rand = "0.8"
+color-eyre = "0.6"
+thiserror = "2.0"
