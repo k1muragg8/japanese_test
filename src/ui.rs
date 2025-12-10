@@ -2,10 +2,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Alignment},
     style::{Color, Modifier, Style},
     text::{Span, Line},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap, List, ListItem},
     Frame,
 };
-use crate::app::{App, AppState};
+use crate::app::{App, AppState, QuizMode};
 
 pub fn ui(f: &mut Frame, app: &App) {
     let size = f.area();
@@ -16,13 +16,22 @@ pub fn ui(f: &mut Frame, app: &App) {
                 .title(" Kana Tutor ")
                 .borders(Borders::ALL);
 
+            let mode_str = match app.quiz_mode {
+                QuizMode::Kana => "Kana Only",
+                QuizMode::Vocab => "Vocabulary Only",
+                QuizMode::Mixed => "Mixed Mode",
+            };
+
             let text = vec![
                 Line::from(Span::styled(
-                    format!("欢迎回来！今天有 {} 个假名需要复习。", app.due_count),
+                    format!("欢迎回来！今天有 {} 个项目需要复习。", app.due_count),
                     Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(""),
+                Line::from(format!("当前模式 (Current Mode): {} (Press 'm' to switch)", mode_str)),
+                Line::from(""),
                 Line::from("按 Enter 开始复习 (Press Enter to start)"),
+                Line::from("按 F10 开启隐蔽模式 (Stealth Mode)"),
                 Line::from("按 q 退出 (Press q to quit)"),
             ];
 
@@ -50,6 +59,27 @@ pub fn ui(f: &mut Frame, app: &App) {
             // Right: Feedback / Assistant
             draw_assistant(f, app, chunks[1]);
         }
+        AppState::FakeLog => {
+            let items: Vec<ListItem> = app.fake_logs
+                .iter()
+                .map(|line| {
+                    let style = if line.contains("WARN") {
+                        Style::default().fg(Color::Yellow)
+                    } else if line.contains("ERROR") {
+                        Style::default().fg(Color::Red)
+                    } else {
+                        Style::default().fg(Color::Green)
+                    };
+                    ListItem::new(Line::from(Span::styled(line, style)))
+                })
+                .collect();
+
+            let list = List::new(items)
+                .block(Block::default().borders(Borders::NONE))
+                .style(Style::default().bg(Color::Black));
+
+            f.render_widget(list, size);
+        }
     }
 }
 
@@ -65,22 +95,64 @@ fn draw_quiz(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(30), // Kana
+                Constraint::Percentage(40), // Question (Kanji/Kana)
                 Constraint::Length(3),      // Input
                 Constraint::Length(3),      // Feedback
                 Constraint::Min(0),
             ].as_ref())
             .split(inner_area);
 
-        // Kana
-        let kana_p = Paragraph::new(Span::styled(
-            &card.kana_char,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        ))
-        .alignment(Alignment::Center)
-        .block(Block::default());
+        // Render Question
+        // If it's vocab, we show Kanji (if available) and maybe Meaning?
+        // Prompt says: "Display: If testing Vocabulary: Show word_kanji (if available) and word_kana."
+        // Wait, if we show word_kana, the user just types it?
+        // Usually vocab cards show Kanji and ask for reading (Kana) or Reading and ask for Meaning?
+        // The prompt says: "User input expects romaji."
+        // So we show Kanji/Kana and expect Romaji.
+        // If Kanji exists, show it. Maybe show Kana as a hint or hidden?
+        // "Show word_kanji (if available) and word_kana."
+        // This suggests showing both. If I show "猫 (ねこ)", the user types "neko".
 
-        f.render_widget(kana_p, chunks[0]);
+        let question_text = if card.is_vocab {
+            let mut text = vec![
+                Line::from(Span::styled(
+                    &card.kana_char, // This holds kanji if available, or kana
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                )),
+            ];
+
+            // If we have sub_text (word_kana) and it's different from main text
+            if let Some(sub) = &card.sub_text {
+                if sub != &card.kana_char {
+                    text.push(Line::from(Span::styled(
+                        format!("({})", sub),
+                        Style::default().fg(Color::Gray),
+                    )));
+                }
+            }
+
+            // Also show meaning? Prompt says "Show word_kanji ... and word_kana". Doesn't explicitly say meaning.
+            // But usually meaning is helpful. I'll add it if it's there.
+            if let Some(meaning) = &card.meaning {
+                 text.push(Line::from(Span::styled(
+                    format!("Meaning: {}", meaning),
+                    Style::default().fg(Color::Magenta),
+                )));
+            }
+            text
+        } else {
+             // Kana mode
+             vec![Line::from(Span::styled(
+                &card.kana_char,
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ))]
+        };
+
+        let question_p = Paragraph::new(question_text)
+            .alignment(Alignment::Center)
+            .block(Block::default());
+
+        f.render_widget(question_p, chunks[0]);
 
         // Input
         let input_text = format!("Answer: {}", app.user_input);
