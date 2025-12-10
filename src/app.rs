@@ -1,3 +1,4 @@
+use std::time::Instant;
 use crate::db::{Db, Card};
 use crate::feedback::FeedbackGenerator;
 
@@ -27,6 +28,7 @@ pub struct App {
     pub quiz_mode: QuizMode,
     pub fake_logs: Vec<String>,
     pub fake_log_index: usize,
+    pub session_start: Instant,
 }
 
 impl App {
@@ -56,6 +58,7 @@ impl App {
             quiz_mode: QuizMode::Mixed, // Default to Mixed or make selectable
             fake_logs: initial_logs,
             fake_log_index: 0,
+            session_start: Instant::now(),
         })
     }
 
@@ -66,7 +69,7 @@ impl App {
             QuizMode::Mixed => "mixed",
         };
 
-        if let Ok(cards) = self.db.get_due_cards(mode_str).await {
+        if let Ok(cards) = self.db.get_next_batch(mode_str).await {
             self.due_cards = cards;
             self.current_card_index = 0;
             self.user_input.clear();
@@ -125,9 +128,26 @@ impl App {
         self.feedback_detail.clear();
 
         if self.current_card_index >= self.due_cards.len() {
-            self.state = AppState::Dashboard;
-            if let Ok(c) = self.db.get_count_due().await {
-                self.due_count = c;
+            // Fetch next batch (Infinite Mode)
+            let mode_str = match self.quiz_mode {
+                QuizMode::Kana => "kana",
+                QuizMode::Vocab => "vocab",
+                QuizMode::Mixed => "mixed",
+            };
+
+            if let Ok(cards) = self.db.get_next_batch(mode_str).await {
+                if !cards.is_empty() {
+                    self.due_cards = cards;
+                    self.current_card_index = 0;
+                } else {
+                    // Truly empty (shouldn't happen with infinite logic unless DB empty)
+                    self.state = AppState::Dashboard;
+                    if let Ok(c) = self.db.get_count_due().await {
+                        self.due_count = c;
+                    }
+                }
+            } else {
+                 self.state = AppState::Dashboard;
             }
         }
     }
