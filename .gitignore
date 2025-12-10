@@ -1,4 +1,3 @@
 target/
 .env
-/logs
-.idea
+**/*.rs.bk
