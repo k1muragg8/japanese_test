@@ -17,10 +17,7 @@ use app::{App, AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Logging (optional)
-    // env_logger::init();
-
-    // Initialize App (DB connection, Migration, Seeding)
+    // Initialize App
     let mut app = App::new().await?;
 
     // TUI Setup
@@ -50,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
-    let tick_rate = Duration::from_millis(250);
+    let tick_rate = Duration::from_millis(100); // Faster tick for smooth logs
     let mut last_tick = std::time::Instant::now();
 
     loop {
@@ -62,30 +59,47 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: 
 
         if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
-                // Global quit
+                // Global Keybinds
+                if key.code == KeyCode::F(10) {
+                    app.toggle_fake_log();
+                    continue;
+                }
+
+                // If in FakeLog, ignore most inputs except quit or toggle
+                if let AppState::FakeLog = app.state {
+                    if key.code == KeyCode::Char('q') {
+                         return Ok(()); // Allow quit from fake log? Or should it be stealthy?
+                         // "Boss Key" usually hides what you are doing. Quitting is fine.
+                    }
+                    // Other keys are ignored or consumed
+                    continue;
+                }
+
                 if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
                     return Ok(());
                 }
 
                 match app.state {
                     AppState::Dashboard => {
-                         if key.code == KeyCode::Enter {
-                             app.start_quiz().await;
+                         match key.code {
+                             KeyCode::Enter => {
+                                 app.start_quiz().await;
+                             }
+                             KeyCode::Char('m') => {
+                                 app.toggle_mode();
+                             }
+                             _ => {}
                          }
                     }
                     AppState::Quiz => {
-                         // Check input handling
                          match key.code {
                              KeyCode::Enter => {
-                                 // Submit
                                  app.submit_answer().await;
                              }
                              KeyCode::Char(' ') => {
-                                 // Continue if result shown
                                  if app.current_feedback.is_some() {
                                      app.next_card().await;
                                  } else {
-                                     // Treat space as input char
                                      app.handle_input_char(' ');
                                  }
                              }
@@ -93,7 +107,6 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: 
                                  app.handle_backspace();
                              }
                              KeyCode::Char(c) => {
-                                 // Only handle chars if feedback not shown (locked)
                                  if app.current_feedback.is_none() {
                                      app.handle_input_char(c);
                                  }
@@ -101,11 +114,16 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: 
                              _ => {}
                          }
                     }
+                    AppState::FakeLog => {
+                        // Handled above
+                    }
                 }
             }
         }
 
+        // Ticks
         if last_tick.elapsed() >= tick_rate {
+            app.tick_fake_log();
             last_tick = std::time::Instant::now();
         }
     }
