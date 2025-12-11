@@ -10,10 +10,29 @@ use crate::app::{App, AppState};
 pub fn ui(f: &mut Frame, app: &App) {
     let size = f.area();
 
+    // Responsive Threshold
+    // "Nano Mode" if height < 10 OR width < 40
+    let is_mini = size.height < 10 || size.width < 40;
+
     match app.state {
-        AppState::Dashboard => draw_dashboard(f, app, size),
-        AppState::Quiz => draw_quiz(f, app, size),
-        AppState::FakeLog => draw_fake_log(f, app, size),
+        AppState::Dashboard => {
+            if is_mini {
+                draw_dashboard_mini(f, app, size);
+            } else {
+                draw_dashboard(f, app, size);
+            }
+        }
+        AppState::Quiz => {
+            if is_mini {
+                draw_quiz_mini(f, app, size);
+            } else {
+                draw_quiz(f, app, size);
+            }
+        }
+        AppState::FakeLog => {
+            // Boss Mode should look like logs regardless of size, but maybe remove borders in mini
+            draw_fake_log(f, app, size, is_mini);
+        }
     }
 }
 
@@ -37,6 +56,8 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         ].as_ref())
         .split(popup_layout[1])[1]
 }
+
+// --- STANDARD MODE (Large Window) ---
 
 fn draw_dashboard(f: &mut Frame, app: &App, size: Rect) {
     let area = centered_rect(60, 50, size);
@@ -95,7 +116,6 @@ fn draw_quiz(f: &mut Frame, app: &App, size: Rect) {
     f.render_widget(title_p, chunks[0]);
 
     // 2. Middle (The Card) - Centered Area
-    // Use 60% width, 50% height of the remaining space
     let center_area = centered_rect(60, 50, chunks[1]);
 
     // Within the center area, we split into Card (Top) and Interaction (Bottom)
@@ -110,19 +130,12 @@ fn draw_quiz(f: &mut Frame, app: &App, size: Rect) {
     if app.current_card_index < app.due_cards.len() {
         let card = &app.due_cards[app.current_card_index];
 
-        // Draw Kana
-        // We want it vertically centered in its chunk too, so let's use a Paragraph with newline padding or alignment?
-        // Ratatui Paragraph doesn't vertically align easily without constraints.
-        // Let's just use a Block for the border, and render text inside.
-
         let kana_block = Block::default()
             .borders(Borders::ALL)
             .title(" Kana ");
 
-        // To make text "LARGE", we can't really change font size in TUI, but we can make it BOLD and colored.
-        // We can also center it.
-        // Let's try to center the text vertically by adding empty lines.
-        let empty_lines = card_chunks[0].height.saturating_sub(3) / 2; // rough estimate
+        // Center vertically
+        let empty_lines = card_chunks[0].height.saturating_sub(3) / 2;
         let mut kana_text = vec![];
         for _ in 0..empty_lines {
             kana_text.push(Line::from(""));
@@ -151,9 +164,7 @@ fn draw_quiz(f: &mut Frame, app: &App, size: Rect) {
                 Line::from(""),
             ];
 
-            // Add detailed feedback if available (e.g. "Next review: 2 days")
             if !app.feedback_detail.is_empty() {
-                // Split by newline to handle multi-line details
                 for line in app.feedback_detail.lines() {
                     feedback_lines.push(Line::from(Span::styled(line, Style::default().fg(Color::Gray))));
                 }
@@ -179,12 +190,11 @@ fn draw_quiz(f: &mut Frame, app: &App, size: Rect) {
                 .block(input_block)
                 .alignment(Alignment::Center);
 
-            // Vertically center the input box within the bottom half
             let input_area = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(1), // Spacer
-                    Constraint::Length(3), // Box height
+                    Constraint::Length(1),
+                    Constraint::Length(3),
                     Constraint::Min(0),
                 ].as_ref())
                 .split(inner_interaction);
@@ -194,7 +204,99 @@ fn draw_quiz(f: &mut Frame, app: &App, size: Rect) {
     }
 }
 
-fn draw_fake_log(f: &mut Frame, app: &App, size: Rect) {
+// --- NANO MODE (Tiny Window) ---
+
+fn draw_dashboard_mini(f: &mut Frame, app: &App, size: Rect) {
+    // No borders, just essential info
+    let text = if app.due_count > 0 {
+        vec![
+            Line::from(Span::styled(
+                format!("Due: {}", app.due_count),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            )),
+            Line::from("Hit [Enter]"),
+        ]
+    } else {
+        vec![
+            Line::from(Span::styled(
+                "Done!",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            )),
+            Line::from("[Enter] Inf."),
+        ]
+    };
+
+    let p = Paragraph::new(text)
+        .alignment(Alignment::Left)
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(p, size);
+}
+
+fn draw_quiz_mini(f: &mut Frame, app: &App, size: Rect) {
+    // Nano Layout:
+    // Line 1: Timer (Right aligned or just small)
+    // Line 2: The Kana (Left or Center)
+    // Line 3: Input Prompt "> ..."
+
+    // Constraints: 1 line top, rest middle
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Timer / Info
+            Constraint::Length(1), // Kana (Main)
+            Constraint::Min(1),    // Input
+        ].as_ref())
+        .split(size);
+
+    // 1. Timer
+    let infinite_str = if app.due_count <= 0 { " (Inf)" } else { "" };
+    let timer_text = format!("{}{}", format_duration(app.session_start.elapsed()), infinite_str);
+    let timer_p = Paragraph::new(timer_text)
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Right);
+    f.render_widget(timer_p, chunks[0]);
+
+    if app.current_card_index < app.due_cards.len() {
+        let card = &app.due_cards[app.current_card_index];
+
+        // 2. Kana
+        // Display as "Question: [Kana]" or just "[Kana]"
+        let kana_text = Span::styled(
+            format!("Card: {}", card.kana_char),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        );
+        let kana_p = Paragraph::new(Line::from(kana_text)).alignment(Alignment::Left);
+        f.render_widget(kana_p, chunks[1]);
+
+        // 3. Input or Feedback
+        if let Some(feedback) = &app.current_feedback {
+            // Feedback State
+            let color = if feedback == "Correct!" { Color::Green } else { Color::Red };
+            // In Nano mode, we might just show "Correct" or "Wrong: [Ans]"
+            let short_feedback = if feedback == "Correct!" {
+                "Correct!".to_string()
+            } else {
+                 format!("X {}", card.romaji)
+            };
+
+            let feedback_p = Paragraph::new(Span::styled(short_feedback, Style::default().fg(color)))
+                .alignment(Alignment::Left);
+            f.render_widget(feedback_p, chunks[2]);
+
+        } else {
+            // Input State
+            // Prompt: "> [user_input]"
+            let input_text = format!("> {}_", app.user_input);
+            let input_p = Paragraph::new(input_text).alignment(Alignment::Left);
+            f.render_widget(input_p, chunks[2]);
+        }
+    }
+}
+
+// --- SHARED ---
+
+fn draw_fake_log(f: &mut Frame, app: &App, size: Rect, is_mini: bool) {
     let items: Vec<ListItem> = app.fake_logs
         .iter()
         .map(|line| {
@@ -210,7 +312,7 @@ fn draw_fake_log(f: &mut Frame, app: &App, size: Rect) {
         .collect();
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::NONE))
+        .block(Block::default().borders(if is_mini { Borders::NONE } else { Borders::NONE })) // Always none for logs
         .style(Style::default().bg(Color::Black));
 
     f.render_widget(list, size);
