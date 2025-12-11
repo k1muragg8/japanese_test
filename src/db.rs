@@ -1,5 +1,5 @@
 use sqlx::{sqlite::{SqlitePool, SqliteConnectOptions}, Pool, Sqlite, ConnectOptions, Row};
-use chrono::{DateTime, Utc, Duration};
+use chrono::{Utc, Duration};
 use crate::data::get_all_kana;
 use std::str::FromStr;
 
@@ -11,7 +11,6 @@ pub struct Card {
     pub interval: i64,
     pub easiness: f64,
     pub repetitions: i64,
-    pub next_review_date: DateTime<Utc>,
 }
 
 impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for Card {
@@ -21,7 +20,6 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for Card {
         let interval: i64 = row.try_get("interval")?;
         let easiness: f64 = row.try_get("easiness")?;
         let repetitions: i64 = row.try_get("repetitions")?;
-        let next_review_date: DateTime<Utc> = row.try_get("next_review_date")?;
 
         Ok(Card {
             id: kana_char.clone(),
@@ -29,8 +27,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for Card {
             romaji,
             interval,
             easiness,
-            repetitions,
-            next_review_date,
+            repetitions
         })
     }
 }
