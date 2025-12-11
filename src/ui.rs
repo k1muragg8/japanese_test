@@ -10,293 +10,177 @@ use crate::app::{App, AppState};
 pub fn ui(f: &mut Frame, app: &App) {
     let size = f.area();
 
-    // Responsive Threshold
-    // "Nano Mode" if height < 10 OR width < 40
-    let is_mini = size.height < 10 || size.width < 40;
-
     match app.state {
-        AppState::Dashboard => {
-            if is_mini {
-                draw_dashboard_mini(f, app, size);
-            } else {
-                draw_dashboard(f, app, size);
-            }
-        }
-        AppState::Quiz => {
-            if is_mini {
-                draw_quiz_mini(f, app, size);
-            } else {
-                draw_quiz(f, app, size);
-            }
-        }
-        AppState::FakeLog => {
-            // Boss Mode should look like logs regardless of size, but maybe remove borders in mini
-            draw_fake_log(f, app, size, is_mini);
-        }
+        AppState::Dashboard => draw_dashboard(f, app, size),
+        AppState::Quiz => draw_focus_mode(f, app, size),
+        AppState::FakeLog => draw_fake_log(f, app, size),
     }
 }
 
-/// Helper function to create a centered rect using up certain percentage of the available rect `r`
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
+fn draw_dashboard(f: &mut Frame, app: &App, size: Rect) {
+    // Simple centered dashboard
+    // Use flexible constraints but ensure enough height for content
+    let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Min(1),    // Top spacer
+            Constraint::Length(7), // Content height (5 lines text + spacing)
+            Constraint::Min(1),    // Bottom spacer
         ].as_ref())
-        .split(r);
+        .split(size);
 
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ].as_ref())
-        .split(popup_layout[1])[1]
-}
-
-// --- STANDARD MODE (Large Window) ---
-
-fn draw_dashboard(f: &mut Frame, app: &App, size: Rect) {
-    let area = centered_rect(60, 50, size);
-
-    let title = " Kana Tutor ";
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+    // If screen is extremely small, use the full area, otherwise center
+    let area = if size.height < 7 { size } else { layout[1] };
 
     let welcome_msg = if app.due_count > 0 {
-        format!("Welcome! Reviews Due: {}", app.due_count)
+        format!("Reviews Due: {}", app.due_count)
     } else {
-        "All Reviews Done! (Infinite Mode Available)".to_string()
+        "All Done!".to_string()
     };
 
     let text = vec![
         Line::from(Span::styled(
-            welcome_msg,
-            Style::default().fg(if app.due_count > 0 { Color::Green } else { Color::Cyan }).add_modifier(Modifier::BOLD),
+            "Kana Tutor",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from("Press [Enter] to Start"),
-        Line::from("Press [F10] for Boss Mode"),
-        Line::from("Press [q] to Quit"),
+        Line::from(Span::styled(
+            welcome_msg,
+            Style::default().fg(if app.due_count > 0 { Color::Green } else { Color::Gray }),
+        )),
+        Line::from(""),
+        Line::from(Span::styled("Press [Enter] to Start", Style::default().fg(Color::DarkGray))),
     ];
 
     let p = Paragraph::new(text)
-        .block(block)
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true });
 
     f.render_widget(p, area);
 }
 
-fn draw_quiz(f: &mut Frame, app: &App, size: Rect) {
-    // 1. Top Block: Title + Session Timer
-    let infinite_str = if app.due_count <= 0 { " (Infinite Mode)" } else { "" };
-    let title_text = format!(
-        " Kana Tutor | Time: {}{} ",
-        format_duration(app.session_start.elapsed()),
-        infinite_str
-    );
+fn draw_focus_mode(f: &mut Frame, app: &App, size: Rect) {
+    // Focus Mode Layout:
+    // 1. Top (20%): Timer & Status
+    // 2. Middle (40%): The Question Card (Big Kana)
+    // 3. Bottom (40%): Input & Feedback
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Title
-            Constraint::Min(0),    // Main Content
+            Constraint::Percentage(20),
+            Constraint::Percentage(40),
+            Constraint::Percentage(40),
         ].as_ref())
         .split(size);
 
-    let title_p = Paragraph::new(title_text)
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(title_p, chunks[0]);
+    // --- 1. Top: Info ---
+    let infinite_str = if app.due_count <= 0 { " (Inf)" } else { "" };
+    let timer_text = format!("Time: {}{}", format_duration(app.session_start.elapsed()), infinite_str);
 
-    // 2. Middle (The Card) - Centered Area
-    let center_area = centered_rect(60, 50, chunks[1]);
+    // Use a dim style for the header so it doesn't distract
+    let header = Paragraph::new(timer_text)
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
 
-    // Within the center area, we split into Card (Top) and Interaction (Bottom)
-    let card_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(60), // The Kana
-            Constraint::Percentage(40), // Input / Feedback
-        ].as_ref())
-        .split(center_area);
+    f.render_widget(header, chunks[0]);
+
 
     if app.current_card_index < app.due_cards.len() {
         let card = &app.due_cards[app.current_card_index];
 
-        let kana_block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Kana ");
+        // --- 2. Middle: The Question (Big Kana) ---
+        // Style: Yellow, Bold, Underlined, Centered.
+        // Vertically centered in the 40% chunk.
 
-        // Center vertically
-        let empty_lines = card_chunks[0].height.saturating_sub(3) / 2;
-        let mut kana_text = vec![];
-        for _ in 0..empty_lines {
-            kana_text.push(Line::from(""));
-        }
-        kana_text.push(Line::from(Span::styled(
+        let mid_chunk = chunks[1];
+        let vertical_center_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(25), // Spacer
+                Constraint::Percentage(50), // Content
+                Constraint::Percentage(25), // Spacer
+            ].as_ref())
+            .split(mid_chunk);
+
+        let kana_content = Span::styled(
             &card.kana_char,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-        )));
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        );
 
-        let kana_p = Paragraph::new(kana_text)
-            .block(kana_block)
+        let kana_p = Paragraph::new(Line::from(kana_content))
             .alignment(Alignment::Center);
 
-        f.render_widget(kana_p, card_chunks[0]);
+        f.render_widget(kana_p, vertical_center_layout[1]);
 
-        // Draw Interaction
-        let interaction_block = Block::default().borders(Borders::NONE);
-        let inner_interaction = interaction_block.inner(card_chunks[1]);
+
+        // --- 3. Bottom: Input & Feedback ---
+        let bot_chunk = chunks[2];
+        let bot_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(10), // Top padding
+                Constraint::Percentage(80), // Content
+                Constraint::Percentage(10), // Bot padding
+            ].as_ref())
+            .split(bot_chunk);
 
         if let Some(feedback) = &app.current_feedback {
-            // RESULT STATE
-            let color = if feedback == "Correct!" { Color::Green } else { Color::Red };
+            // FEEDBACK STATE
+            let is_correct = feedback == "Correct!";
+            let color = if is_correct { Color::Green } else { Color::Red };
 
-            let mut feedback_lines = vec![
-                Line::from(Span::styled(feedback, Style::default().fg(color).add_modifier(Modifier::BOLD))),
-                Line::from(""),
-            ];
+            let mut lines = vec![];
 
-            if !app.feedback_detail.is_empty() {
-                for line in app.feedback_detail.lines() {
-                    feedback_lines.push(Line::from(Span::styled(line, Style::default().fg(Color::Gray))));
-                }
-                feedback_lines.push(Line::from(""));
+            if is_correct {
+                lines.push(Line::from(Span::styled("Good!", Style::default().fg(color).add_modifier(Modifier::BOLD))));
+            } else {
+                // Show correction
+                lines.push(Line::from(Span::styled(feedback, Style::default().fg(color).add_modifier(Modifier::BOLD))));
             }
 
-            feedback_lines.push(Line::from(Span::styled("(Press Enter to continue)", Style::default().fg(Color::DarkGray))));
+            // Detail
+            if !app.feedback_detail.is_empty() {
+                lines.push(Line::from(""));
+                for subline in app.feedback_detail.lines() {
+                     lines.push(Line::from(Span::styled(subline, Style::default().fg(Color::Gray))));
+                }
+            }
 
-            let feedback_p = Paragraph::new(feedback_lines)
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("[Enter] to Continue", Style::default().fg(Color::DarkGray))));
+
+            let feedback_p = Paragraph::new(lines)
                 .alignment(Alignment::Center)
                 .wrap(Wrap { trim: true });
 
-            f.render_widget(feedback_p, inner_interaction);
+            f.render_widget(feedback_p, bot_layout[1]);
 
         } else {
-            // QUIZ STATE
-            let input_block = Block::default()
-                .title(" Enter Romaji ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::White));
+            // INPUT STATE
+            // Prompt: > [ ______ ]
+            // We want to visualize the text being typed.
 
-            let input_p = Paragraph::new(app.user_input.as_str())
-                .block(input_block)
+            // "When typing, show text in Color::White"
+            let input_content = vec![
+                Line::from(vec![
+                    Span::styled("> [ ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(&app.user_input, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                    Span::styled(" ]", Style::default().fg(Color::DarkGray)),
+                ]),
+            ];
+
+            let input_p = Paragraph::new(input_content)
                 .alignment(Alignment::Center);
 
-            let input_area = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),
-                    Constraint::Length(3),
-                    Constraint::Min(0),
-                ].as_ref())
-                .split(inner_interaction);
-
-            f.render_widget(input_p, input_area[1]);
+            f.render_widget(input_p, bot_layout[1]);
         }
     }
 }
 
-// --- NANO MODE (Tiny Window) ---
-
-fn draw_dashboard_mini(f: &mut Frame, app: &App, size: Rect) {
-    // No borders, just essential info
-    let text = if app.due_count > 0 {
-        vec![
-            Line::from(Span::styled(
-                format!("Due: {}", app.due_count),
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-            )),
-            Line::from("Hit [Enter]"),
-        ]
-    } else {
-        vec![
-            Line::from(Span::styled(
-                "Done!",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-            )),
-            Line::from("[Enter] Inf."),
-        ]
-    };
-
-    let p = Paragraph::new(text)
-        .alignment(Alignment::Left)
-        .wrap(Wrap { trim: true });
-
-    f.render_widget(p, size);
-}
-
-fn draw_quiz_mini(f: &mut Frame, app: &App, size: Rect) {
-    // Nano Layout:
-    // Line 1: Timer (Right aligned or just small)
-    // Line 2: The Kana (Left or Center)
-    // Line 3: Input Prompt "> ..."
-
-    // Constraints: 1 line top, rest middle
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // Timer / Info
-            Constraint::Length(1), // Kana (Main)
-            Constraint::Min(1),    // Input
-        ].as_ref())
-        .split(size);
-
-    // 1. Timer
-    let infinite_str = if app.due_count <= 0 { " (Inf)" } else { "" };
-    let timer_text = format!("{}{}", format_duration(app.session_start.elapsed()), infinite_str);
-    let timer_p = Paragraph::new(timer_text)
-        .style(Style::default().fg(Color::DarkGray))
-        .alignment(Alignment::Right);
-    f.render_widget(timer_p, chunks[0]);
-
-    if app.current_card_index < app.due_cards.len() {
-        let card = &app.due_cards[app.current_card_index];
-
-        // 2. Kana
-        // Display as "Question: [Kana]" or just "[Kana]"
-        let kana_text = Span::styled(
-            format!("Card: {}", card.kana_char),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-        );
-        let kana_p = Paragraph::new(Line::from(kana_text)).alignment(Alignment::Left);
-        f.render_widget(kana_p, chunks[1]);
-
-        // 3. Input or Feedback
-        if let Some(feedback) = &app.current_feedback {
-            // Feedback State
-            let color = if feedback == "Correct!" { Color::Green } else { Color::Red };
-            // In Nano mode, we might just show "Correct" or "Wrong: [Ans]"
-            let short_feedback = if feedback == "Correct!" {
-                "Correct!".to_string()
-            } else {
-                 format!("X {}", card.romaji)
-            };
-
-            let feedback_p = Paragraph::new(Span::styled(short_feedback, Style::default().fg(color)))
-                .alignment(Alignment::Left);
-            f.render_widget(feedback_p, chunks[2]);
-
-        } else {
-            // Input State
-            // Prompt: "> [user_input]"
-            let input_text = format!("> {}_", app.user_input);
-            let input_p = Paragraph::new(input_text).alignment(Alignment::Left);
-            f.render_widget(input_p, chunks[2]);
-        }
-    }
-}
-
-// --- SHARED ---
-
-fn draw_fake_log(f: &mut Frame, app: &App, size: Rect, is_mini: bool) {
+fn draw_fake_log(f: &mut Frame, app: &App, size: Rect) {
     let items: Vec<ListItem> = app.fake_logs
         .iter()
         .map(|line| {
@@ -312,7 +196,7 @@ fn draw_fake_log(f: &mut Frame, app: &App, size: Rect, is_mini: bool) {
         .collect();
 
     let list = List::new(items)
-        .block(Block::default().borders(if is_mini { Borders::NONE } else { Borders::NONE })) // Always none for logs
+        .block(Block::default().borders(Borders::NONE))
         .style(Style::default().bg(Color::Black));
 
     f.render_widget(list, size);
