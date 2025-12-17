@@ -1,62 +1,64 @@
-# Kana Tutor (假名导师)
+# Kana Tutor
 
-`Kana Tutor` 是一个简单的、基于终端的抽认卡应用程序，旨在帮助您学习和记忆日语假名（平假名和片假名）。它使用基于简化版 SM2 算法的间隔重复系统（SRS）来优化学习效果。
+A Japanese Kana learning tool powered by a Spaced Repetition System (SRS).
 
-## ✨ 功能特性
+**Now featuring two modes:**
+- **Terminal Mode (TUI)**: The classic command-line experience.
+- **Web Mode (WASM)**: A modern, minimalistic, flat-design web interface powered by **Leptos** and **Axum**.
 
-- **终端用户界面 (TUI):** 一个在您的终端中运行的、简洁无干扰的界面。
-- **间隔重复系统 (SRS):** 根据您的表现智能安排复习计划，以最大限度地提高长期记忆效果。
-- **平假名 & 片假名:** 包含全套基本字符，以及浊音（dakuon）、半浊音（handakuon）和拗音（yoon）字符。
-- **即时反馈:** 立即获得对您答案的反馈。如果回答错误，应用程序会显示正确答案并提供有用的上下文。
-- **独立运行:** 使用本地 SQLite 数据库（`kana.db`）存储您的学习进度，无需外部服务。
-- **无限模式:** 完成应复习的卡片后，应用程序允许您继续练习新卡片或提前复习未来的卡片。
+## Prerequisites
 
-## 🚀 快速上手
+Users need to install the WASM build tools before running the web version:
 
-### 先决条件
+```bash
+# Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-- [Rust](https://www.rust-lang.org/tools/install) (建议使用最新的稳定版本)
+# Add the WebAssembly target
+rustup target add wasm32-unknown-unknown
 
-### 构建与运行
+# Install Trunk (WASM bundler)
+cargo install trunk
+```
 
-1.  **克隆仓库:**
-    ```bash
-    git clone <repository-url>
-    cd kana-tutor
-    ```
+## 🚀 Usage
 
-2.  **构建并运行应用程序:**
-    ```bash
-    cargo run --release
-    ```
-    应用程序将在根目录中创建一个 `kana.db` 文件来存储您的学习进度。
+### 🖥️ Terminal Mode (TUI)
+Simply run the project using Cargo:
+```bash
+cargo run --release
+```
+This launches the terminal interface. Use your keyboard to navigate.
 
-## ⌨️ 如何使用
+### 🌐 Web Mode (WASM)
+To launch the web interface, you first need to compile the frontend assets, then run the backend server.
 
-该界面设计得极为简约和直观。
+1. **Build the Frontend:**
+   ```bash
+   cd frontend
+   trunk build --release
+   cd ..
+   ```
 
-### 按键绑定
+2. **Run the Server:**
+   ```bash
+   cargo run --release -- --web
+   ```
 
--   **[Enter]**: 从主面板开始测验 / 在测验中提交答案 / 查看反馈后继续到下一张卡片。
--   **[Space]**: 也可用于继续到下一张卡片。
--   **[Esc]** 或 **`q`**: 随时退出应用程序。
--   **[F10]**: 切换到一个显示伪编译日志的“老板键”屏幕。
+3. **Open the App:**
+   Navigate to [http://0.0.0.0:3000](http://0.0.0.0:3000) in your browser.
 
-### 测验流程
+## ⌨️ Controls
 
-1.  当屏幕上显示一个假名字符时，输入其对应的罗马音 (Romaji)。
-2.  按 **[Enter]** 提交您的答案。
-3.  应用程序会告诉您回答是否正确。
-    -   **正确:** 该卡片将被安排在未来进行复习。反馈信息会告诉您下一次复习的时间（例如，“下次复习：6天后”）。
-    -   **错误:** 该卡片的复习间隔将被重置，您很快会再次看到它。
-4.  按 **[Enter]** 进入下一张卡片。
+### Web Interface
+The web interface features a **Button-less "Enter-Only" Workflow**:
+- **Type Answer**: Just start typing. The input box autofocuses.
+- **Submit**: Press **Enter**.
+- **Next Card**: Press **Enter** again.
 
-## 🧠 学习算法
+### Terminal Interface
+- **[Enter]**: Start Quiz / Submit Answer / Next Card.
+- **[Esc]** or **`q`**: Quit.
 
-该应用程序使用简化版的 **SuperMemo-2 (SM2)** 算法来安排卡片复习。基本思想如下：
-
--   当您正确回答一张卡片时，下一次复习前的等待时间（`interval`）会增加。
--   增加的时间量取决于卡片的 `easiness factor`（简易度）以及您已经复习过的次数（`repetitions`）。
--   如果您回答错误，卡片的进度将被重置，您很快就会再次看到它。
-
-这确保了您可以花更多时间在您觉得困难的字符上，而在您已经熟练掌握的字符上花费更少的时间。
+## 🧠 Spaced Repetition System (SRS)
+Both modes share the same SQLite database (`kana.db`). The app uses a simplified SM2 algorithm to schedule reviews, ensuring you focus on the characters you struggle with.
