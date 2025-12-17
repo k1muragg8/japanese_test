@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Span, Line},
-    widgets::{Block, Borders, Paragraph, List, ListItem, Wrap},
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 use crate::app::{App, AppState};
@@ -13,7 +13,6 @@ pub fn ui(f: &mut Frame, app: &App) {
     match app.state {
         AppState::Dashboard => draw_dashboard(f, app, size),
         AppState::Quiz => draw_focus_mode(f, app, size),
-        AppState::FakeLog => draw_fake_log(f, app, size),
     }
 }
 
@@ -178,28 +177,6 @@ fn draw_focus_mode(f: &mut Frame, app: &App, size: Rect) {
             f.render_widget(input_p, bot_layout[1]);
         }
     }
-}
-
-fn draw_fake_log(f: &mut Frame, app: &App, size: Rect) {
-    let items: Vec<ListItem> = app.fake_logs
-        .iter()
-        .map(|line| {
-            let style = if line.contains("WARN") {
-                Style::default().fg(Color::Yellow)
-            } else if line.contains("ERROR") {
-                Style::default().fg(Color::Red)
-            } else {
-                Style::default().fg(Color::Green)
-            };
-            ListItem::new(Line::from(Span::styled(line, style)))
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::NONE))
-        .style(Style::default().bg(Color::Black));
-
-    f.render_widget(list, size);
 }
 
 fn format_duration(d: std::time::Duration) -> String {

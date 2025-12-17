@@ -59,13 +59,12 @@ fn Quiz() -> impl IntoView {
         });
     });
 
-    // Aggressive Auto-Focus Effect
+    // Aggressive Auto-Focus Effect (for user convenience only)
     create_effect(move |_| {
         let _ = loading.get();
         let _ = current_index.get();
-        let _ = feedback.get(); // Track feedback changes to re-focus input after submit
+        let _ = feedback.get();
 
-        // Always focus input to capture Enter key
         if let Some(input) = input_ref.get() {
             let _ = input.focus();
         }
@@ -126,18 +125,22 @@ fn Quiz() -> impl IntoView {
         }
     };
 
-    let on_keydown = move |ev: web_sys::KeyboardEvent| {
+    // Global Window Event Listener for "Infinite Enter" logic
+    let handle_global_enter = window_event_listener(ev::keydown, move |ev| {
         if ev.key() == "Enter" {
             ev.prevent_default();
+
             if is_submitted.get() {
-                // State B: Already submitted, go to next card
+                // State B: Feedback shown -> Next Card
                 next_card();
             } else {
-                // State A: Typing, submit answer
+                // State A: Typing -> Submit Answer
                 submit_answer();
             }
         }
-    };
+    });
+
+    on_cleanup(move || handle_global_enter.remove());
 
     view! {
         <div class="w-full max-w-md">
@@ -170,7 +173,7 @@ fn Quiz() -> impl IntoView {
                                         prop:readonly=is_sub
                                         node_ref=input_ref
                                         on:input=move |ev| set_user_input.set(event_target_value(&ev))
-                                        on:keydown=on_keydown
+                                        // Removed on:keydown here; using global listener
                                     />
 
                                     // Visual Feedback & Hints (No Buttons)
