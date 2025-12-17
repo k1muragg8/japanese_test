@@ -2,8 +2,9 @@ use sqlx::{sqlite::{SqlitePool, SqliteConnectOptions}, Pool, Sqlite, ConnectOpti
 use chrono::{Utc, Duration};
 use crate::data::get_all_kana;
 use std::str::FromStr;
+use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Card {
     pub id: String, // kana_char
     pub kana_char: String,
