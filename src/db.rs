@@ -156,6 +156,7 @@ impl Db {
         // 1. Calculate Retention (R)
         // elapsed in days for formula
         let elapsed_seconds = (now - last_review).num_seconds().max(0) as f64;
+        #[allow(unused)]
         let elapsed_days = elapsed_seconds / 86400.0;
 
         // R is not used directly in update logic provided, but concepts are.
