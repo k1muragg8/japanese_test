@@ -63,10 +63,27 @@ fn Quiz() -> impl IntoView {
     create_effect(move |_| {
         let _ = loading.get();
         let _ = current_index.get();
+        // Track feedback changes so we can potentially focus if needed
         let _ = feedback.get();
 
         if let Some(input) = input_ref.get() {
             let _ = input.focus();
+        }
+    });
+
+    // Aggressive Auto-Focus on State Change: When going back to typing mode
+    create_effect(move |_| {
+        // Track the submission state
+        let submitted = is_submitted.get();
+
+        // If we are back to typing mode (not submitted)
+        if !submitted {
+             // Small delay to ensure DOM update (feedback removed, input potentially re-rendered or just needs focus)
+             set_timeout(move || {
+                 if let Some(input) = input_ref.get() {
+                     let _ = input.focus();
+                 }
+             }, std::time::Duration::from_millis(10));
         }
     });
 
