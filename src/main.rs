@@ -81,20 +81,6 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: 
 
         if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
-                // Global Keybinds
-                if key.code == KeyCode::F(10) {
-                    app.toggle_fake_log();
-                    continue;
-                }
-
-                // If in FakeLog, ignore most inputs except quit or toggle
-                if let AppState::FakeLog = app.state {
-                    if key.code == KeyCode::Char('q') {
-                         return Ok(());
-                    }
-                    continue;
-                }
-
                 if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
                     return Ok(());
                 }
@@ -136,16 +122,12 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: 
                              _ => {}
                          }
                     }
-                    AppState::FakeLog => {
-                        // Handled above
-                    }
                 }
             }
         }
 
         // Ticks
         if last_tick.elapsed() >= tick_rate {
-            app.tick_fake_log();
             last_tick = std::time::Instant::now();
         }
     }
