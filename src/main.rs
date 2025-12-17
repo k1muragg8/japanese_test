@@ -6,17 +6,39 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
+use std::env;
+use std::sync::Arc;
+use tower_http::services::ServeDir;
 
 mod app;
 mod db;
 mod feedback;
 mod ui;
 mod data;
+mod api;
 
 use app::{App, AppState};
+use db::Db;
+use api::ApiState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = env::args().collect();
+
+    if args.iter().any(|arg| arg == "--web") {
+        let db = Db::new().await?;
+        let state = ApiState { db: Arc::new(db) };
+
+        let app_router = api::app_router(state)
+            .fallback_service(ServeDir::new("frontend/dist")); // Serve static files
+
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+        println!("Server running on http://0.0.0.0:3000");
+        axum::serve(listener, app_router).await?;
+
+        return Ok(());
+    }
+
     // Initialize App
     let mut app = App::new().await?;
 
