@@ -3,6 +3,7 @@ use chrono::{Utc, Duration};
 use crate::data::get_all_kana;
 use std::str::FromStr;
 use serde::{Serialize, Deserialize};
+use rand::Rng;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Card {
@@ -10,8 +11,8 @@ pub struct Card {
     pub kana_char: String,
     pub romaji: String,
     pub interval: i64,
-    pub easiness: f64,
-    pub repetitions: i64,
+    pub easiness: f64,    // Acts as 'ease_factor'
+    pub repetitions: i64, // Acts as 'streak'
 }
 
 impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for Card {
@@ -52,6 +53,7 @@ impl Db {
     }
 
     async fn migrate(&self) -> anyhow::Result<()> {
+        // Schema uses 'easiness' for ease_factor and 'repetitions' for streak
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS progress (
@@ -153,37 +155,61 @@ impl Db {
         .fetch_one(&self.pool)
         .await?;
 
-        // Simplified SuperMemo-2
-        let quality = if correct { 5 } else { 0 };
+        let mut next_interval: f64;
+        let mut next_easiness = card.easiness;
+        let mut next_reps = card.repetitions;
 
-        let mut next_easiness = card.easiness + (0.1 - (5.0 - quality as f64) * (0.08 + (5.0 - quality as f64) * 0.02));
-        if next_easiness < 1.3 {
-            next_easiness = 1.3;
-        }
+        if correct {
+            // Correct: Increase Interval
+            if card.interval == 0 {
+                next_interval = 1.0;
+            } else {
+                next_interval = (card.interval as f64) * card.easiness;
+            }
 
-        let next_reps;
-        let next_interval;
+            // Min interval constraint
+            if next_interval < 1.0 {
+                next_interval = 1.0;
+            }
 
-        if quality >= 3 {
-             next_reps = card.repetitions + 1;
-             if next_reps == 1 {
-                 next_interval = 1;
-             } else if next_reps == 2 {
-                 next_interval = 6;
-             } else {
-                 next_interval = (card.interval as f64 * next_easiness).ceil() as i64;
-             }
+            // Update Ease Factor: +0.1, Max 3.0
+            next_easiness += 0.1;
+            if next_easiness > 3.0 {
+                next_easiness = 3.0;
+            }
+
+            // Update Streak
+            next_reps += 1;
+
+            // Fuzzing: +/- 5%
+            let mut rng = rand::thread_rng();
+            let fuzz_factor: f64 = rng.gen_range(0.95..1.05);
+            next_interval *= fuzz_factor;
+
         } else {
-             next_reps = 0;
-             next_interval = 1;
+            // Wrong: Reset
+            next_interval = 1.0; // Reset to 1 day
+
+            // Punish Ease Factor: -0.2, Min 1.3
+            next_easiness -= 0.2;
+            if next_easiness < 1.3 {
+                next_easiness = 1.3;
+            }
+
+            // Reset Streak
+            next_reps = 0;
         }
 
-        let next_date = Utc::now() + Duration::days(next_interval);
+        let next_interval_int = next_interval.round() as i64;
+        // Ensure strictly positive interval even after fuzzing rounding
+        let final_interval = if next_interval_int < 1 { 1 } else { next_interval_int };
+
+        let next_date = Utc::now() + Duration::days(final_interval);
 
         sqlx::query(
             "UPDATE progress SET interval = ?, easiness = ?, repetitions = ?, next_review_date = ? WHERE kana_char = ?"
         )
-        .bind(next_interval)
+        .bind(final_interval)
         .bind(next_easiness)
         .bind(next_reps)
         .bind(next_date)
@@ -191,7 +217,7 @@ impl Db {
         .execute(&self.pool)
         .await?;
 
-        Ok(next_interval)
+        Ok(final_interval)
     }
 
     pub async fn get_count_due(&self) -> anyhow::Result<i64> {
