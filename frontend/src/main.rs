@@ -8,9 +8,11 @@ pub struct Card {
     pub id: String,
     pub kana_char: String,
     pub romaji: String,
-    pub interval: i64,
-    pub easiness: f64,
-    pub repetitions: i64,
+    // FSRS Fields
+    pub stability: f64,
+    pub difficulty: f64,
+    // Option<String> or specialized Date handling, but simple String or Option is safest for JSON if backend sends timestamp
+    pub last_review: Option<String>,
 }
 
 #[derive(Serialize)]

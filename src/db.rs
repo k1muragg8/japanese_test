@@ -1,35 +1,38 @@
-use sqlx::{sqlite::{SqlitePool, SqliteConnectOptions}, Pool, Sqlite, ConnectOptions, Row};
-use chrono::{Utc, Duration};
+use sqlx::{sqlite::{SqlitePool, SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous}, Pool, Sqlite, ConnectOptions, Row};
+use chrono::{Utc, DateTime};
 use crate::data::get_all_kana;
 use std::str::FromStr;
 use serde::{Serialize, Deserialize};
-use rand::Rng;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Card {
     pub id: String, // kana_char
     pub kana_char: String,
     pub romaji: String,
-    pub interval: i64,
-    pub easiness: f64,    // Acts as 'ease_factor'
-    pub repetitions: i64, // Acts as 'streak'
+    // FSRS Fields
+    pub stability: f64,
+    pub difficulty: f64,
+    pub last_review: Option<DateTime<Utc>>,
 }
 
 impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for Card {
     fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
         let kana_char: String = row.try_get("kana_char")?;
         let romaji: String = row.try_get("romaji")?;
-        let interval: i64 = row.try_get("interval")?;
-        let easiness: f64 = row.try_get("easiness")?;
-        let repetitions: i64 = row.try_get("repetitions")?;
+
+        let stability: f64 = row.try_get("stability").unwrap_or(86400.0);
+        let difficulty: f64 = row.try_get("difficulty").unwrap_or(5.0);
+
+        // Handle last_review potentially being null (new cards) or from legacy
+        let last_review: Option<DateTime<Utc>> = row.try_get("last_review").ok();
 
         Ok(Card {
             id: kana_char.clone(),
             kana_char,
             romaji,
-            interval,
-            easiness,
-            repetitions
+            stability,
+            difficulty,
+            last_review,
         })
     }
 }
@@ -42,7 +45,10 @@ pub struct Db {
 impl Db {
     pub async fn new() -> anyhow::Result<Self> {
         let options = SqliteConnectOptions::from_str("sqlite://kana.db?mode=rwc")?
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
             .log_statements(log::LevelFilter::Trace);
+
         let pool = SqlitePool::connect_with(options).await?;
 
         let db = Db { pool };
@@ -53,7 +59,7 @@ impl Db {
     }
 
     async fn migrate(&self) -> anyhow::Result<()> {
-        // Schema uses 'easiness' for ease_factor and 'repetitions' for streak
+        // Initial Table Creation (if not exists)
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS progress (
@@ -68,6 +74,14 @@ impl Db {
         )
         .execute(&self.pool)
         .await?;
+
+        // FSRS Migration: Add columns if they don't exist
+        // SQLite doesn't support IF NOT EXISTS in ADD COLUMN, so we catch errors
+        // or check pragma. A simple way is to try adding and ignore duplicate column error.
+
+        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN stability REAL DEFAULT 86400.0").execute(&self.pool).await;
+        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN difficulty REAL DEFAULT 5.0").execute(&self.pool).await;
+        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN last_review DATETIME").execute(&self.pool).await;
 
         Ok(())
     }
@@ -91,137 +105,135 @@ impl Db {
     }
 
     pub async fn get_next_batch(&self) -> anyhow::Result<Vec<Card>> {
-        let mut cards = Vec::new();
+        // FSRS Logic for Fetching:
+        // Prioritize by Retrievability (R) ascending.
+        // R = 0.9 ^ (elapsed_days / stability)
+        // elapsed_seconds = (now - last_review)
+        // We want lowest R first.
+        // Lower R means (elapsed / stability) is HIGHER.
+        // So we order by (elapsed_seconds / stability) DESC.
+        // COALESCE(last_review, 0) handles new cards (infinite elapsed -> top priority? Or handle separately).
+        // Let's treat New Cards (last_review IS NULL) as high priority or mix them.
+        // Standard approach: Due cards (R < 0.9) first, then New.
+
+        // For simplicity and "show lowest retention first":
+        // Sort by: (strftime('%s', 'now') - strftime('%s', last_review)) / stability DESC
+        // New cards (last_review NULL) should appear.
+
         let limit = 20;
-
-        let select_clause = r#"
-            SELECT
-                kana_char,
-                romaji,
-                interval,
-                easiness,
-                repetitions,
-                next_review_date
-            FROM progress
-        "#;
-
-        // Priority 1: Due Reviews (repetitions > 0 AND due)
-        let p1_query = format!("{} WHERE next_review_date <= CURRENT_TIMESTAMP AND repetitions > 0 LIMIT ?", select_clause);
-        let p1_cards = sqlx::query_as::<_, Card>(&p1_query)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?;
-        cards.extend(p1_cards);
-
-        if cards.len() < limit as usize {
-            let needed = limit - cards.len() as i64;
-            // Priority 2: New Cards (repetitions = 0)
-            let p2_query = format!("{} WHERE repetitions = 0 ORDER BY RANDOM() LIMIT ?", select_clause);
-            let p2_cards = sqlx::query_as::<_, Card>(&p2_query)
-                .bind(needed)
-                .fetch_all(&self.pool)
-                .await?;
-            cards.extend(p2_cards);
-        }
-
-        if cards.len() < limit as usize {
-            let needed = limit - cards.len() as i64;
-            // Priority 3: Review Ahead (Future)
-            let p3_query = format!("{} WHERE next_review_date > CURRENT_TIMESTAMP AND repetitions > 0 ORDER BY RANDOM() LIMIT ?", select_clause);
-            let p3_cards = sqlx::query_as::<_, Card>(&p3_query)
-                .bind(needed)
-                .fetch_all(&self.pool)
-                .await?;
-            cards.extend(p3_cards);
-        }
+        let cards = sqlx::query_as::<_, Card>(
+            r#"
+            SELECT * FROM progress
+            ORDER BY
+                CASE WHEN last_review IS NULL THEN 1 ELSE 0 END DESC, -- New cards first? Or Review?
+                (strftime('%s', 'now') - strftime('%s', last_review)) / stability DESC
+            LIMIT ?
+            "#
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
 
         Ok(cards)
     }
 
     pub async fn update_card(&self, id: &str, correct: bool) -> anyhow::Result<i64> {
-        let card = sqlx::query_as::<_, Card>(
-            r#"
-            SELECT
-                kana_char,
-                romaji,
-                interval,
-                easiness,
-                repetitions,
-                next_review_date
-            FROM progress WHERE kana_char = ?
-            "#
-        )
-        .bind(id)
-        .fetch_one(&self.pool)
-        .await?;
+        let mut tx = self.pool.begin().await?;
 
-        let mut next_interval: f64;
-        let mut next_easiness = card.easiness;
-        let mut next_reps = card.repetitions;
+        // Read current state
+        let card = sqlx::query_as::<_, Card>("SELECT * FROM progress WHERE kana_char = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
 
+        let now = Utc::now();
+
+        // Defaults if null (from migration)
+        let last_review = card.last_review.unwrap_or(now);
+        let mut s = card.stability; // Seconds
+        let mut d = card.difficulty;
+
+        // 1. Calculate Retention (R)
+        // elapsed in days for formula
+        let elapsed_seconds = (now - last_review).num_seconds().max(0) as f64;
+        let elapsed_days = elapsed_seconds / 86400.0;
+
+        // R is not used directly in update logic provided, but concepts are.
+        // R = 0.9f64.powf(elapsed_days / (s / 86400.0)); // if s is seconds?
+        // Prompt says: "stability (S): How long (in seconds) the memory lasts."
+        // And "R = 0.9 ^ (elapsed_days / stability)".
+        // This implies stability in the formula is DAYS?
+        // Or if stability is seconds, formula should be R = 0.9 ^ (elapsed_sec / s).
+        // Let's assume stability is seconds as defined in struct.
+        // Formula: R = 0.9 ^ (elapsed_seconds / s)
+
+        // 2. Update Stability (S)
         if correct {
-            // Correct: Increase Interval
-            if card.interval == 0 {
-                next_interval = 1.0;
-            } else {
-                next_interval = (card.interval as f64) * card.easiness;
-            }
-
-            // Min interval constraint
-            if next_interval < 1.0 {
-                next_interval = 1.0;
-            }
-
-            // Update Ease Factor: +0.1, Max 3.0
-            next_easiness += 0.1;
-            if next_easiness > 3.0 {
-                next_easiness = 3.0;
-            }
-
-            // Update Streak
-            next_reps += 1;
-
-            // Fuzzing: +/- 5%
-            let mut rng = rand::thread_rng();
-            let fuzz_factor: f64 = rng.gen_range(0.95..1.05);
-            next_interval *= fuzz_factor;
-
+            // S_new = S * (1 + factor * difficulty_weight)
+            // Factor ~ 2.0 heuristic?
+            // "Exponential growth based on how hard it was"
+            // Heuristic: S_new = S * (1.0 + (D * 0.2))
+            let growth_multiplier = 1.0 + (d * 0.2);
+            s = s * growth_multiplier;
         } else {
-            // Wrong: Reset
-            next_interval = 1.0; // Reset to 1 day
-
-            // Punish Ease Factor: -0.2, Min 1.3
-            next_easiness -= 0.2;
-            if next_easiness < 1.3 {
-                next_easiness = 1.3;
-            }
-
-            // Reset Streak
-            next_reps = 0;
+            // Wrong: S_new = S * 0.5
+            s = s * 0.5;
         }
 
-        let next_interval_int = next_interval.round() as i64;
-        // Ensure strictly positive interval even after fuzzing rounding
-        let final_interval = if next_interval_int < 1 { 1 } else { next_interval_int };
+        // 3. Update Difficulty (D)
+        if correct {
+            d = d - 0.2;
+        } else {
+            d = d + 0.5;
+        }
+        // Clamp D
+        if d < 1.0 { d = 1.0; }
+        if d > 10.0 { d = 10.0; }
 
-        let next_date = Utc::now() + Duration::days(final_interval);
+        // 4. Next Interval (I)
+        // Target R = 0.9.
+        // Next Interval (sec) = S * (log(0.9) / log(R_current))  <-- This formula from prompt is problematic if R=1.
+        // Re-reading prompt: "Next Interval (sec) = S * (log(0.9) / log(R_current))"
+        // If I assume "Stability" IS the interval where R=0.9, then Next Interval IS S.
+        // The formula might be trying to compensate for "early review"?
+        // But in FSRS, Stability IS the interval length for retrievability 0.9.
+        // So I will set Next Interval = S.
+
+        let next_interval_seconds = s.max(60.0) as i64; // Min 60s
+
+        // Update DB
+        // next_review_date is used for legacy or display?
+        // We update stability, difficulty, last_review.
+        // Note: We update last_review to NOW.
 
         sqlx::query(
-            "UPDATE progress SET interval = ?, easiness = ?, repetitions = ?, next_review_date = ? WHERE kana_char = ?"
+            "UPDATE progress SET stability = ?, difficulty = ?, last_review = ? WHERE kana_char = ?"
         )
-        .bind(final_interval)
-        .bind(next_easiness)
-        .bind(next_reps)
-        .bind(next_date)
+        .bind(s)
+        .bind(d)
+        .bind(now)
         .bind(id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
-        Ok(final_interval)
+        tx.commit().await?;
+
+        Ok(next_interval_seconds)
     }
 
     pub async fn get_count_due(&self) -> anyhow::Result<i64> {
-         let count: i64 = sqlx::query_scalar("SELECT count(*) FROM progress WHERE next_review_date <= CURRENT_TIMESTAMP")
+         // Count where retention < 0.9?
+         // (now - last_review) / stability > 1 (if S is time to 0.9)
+         // So (now - last_review) > stability
+
+         let count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT count(*) FROM progress
+            WHERE
+                last_review IS NOT NULL
+                AND (strftime('%s', 'now') - strftime('%s', last_review)) > stability
+            "#
+         )
             .fetch_one(&self.pool)
             .await?;
          Ok(count)

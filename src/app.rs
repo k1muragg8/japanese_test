@@ -68,8 +68,21 @@ impl App {
 
         if correct {
             self.current_feedback = Some("Correct!".to_string());
-            if let Ok(days) = interval_res {
-                self.feedback_detail = format!("回答正确！\n下次复习: {}天后", days);
+            if let Ok(seconds) = interval_res {
+                // Convert seconds to human readable
+                let days = seconds as f64 / 86400.0;
+                if days < 1.0 {
+                     // Less than a day
+                     let hours = seconds / 3600;
+                     if hours < 1 {
+                         let mins = seconds / 60;
+                         self.feedback_detail = format!("回答正确！\n下次复习: {}分钟后", mins);
+                     } else {
+                         self.feedback_detail = format!("回答正确！\n下次复习: {}小时后", hours);
+                     }
+                } else {
+                     self.feedback_detail = format!("回答正确！\n下次复习: {:.1}天后", days);
+                }
             } else {
                 self.feedback_detail = "回答正确！".to_string();
             }
