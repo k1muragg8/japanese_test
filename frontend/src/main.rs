@@ -22,6 +22,7 @@ struct SubmitRequest {
 }
 
 #[derive(Deserialize)]
+#[allow(unused)]
 struct SubmitResponse {
     new_interval: i64,
 }

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <title>Kana Tutor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+<script type="module">
+import init, * as bindings from '/kana-frontend-595b98d5d3d24820.js';
+const wasm = await init({ module_or_path: '/kana-frontend-595b98d5d3d24820_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+  <link rel="modulepreload" href="/kana-frontend-595b98d5d3d24820.js" crossorigin="anonymous" integrity="sha384-QomyzXyT3F7ZFwWGFvXtWSJWBbEnkZB7i/BUEG2h/TFMgVKl2QAQJsOuLgQZYtDQ"><link rel="preload" href="/kana-frontend-595b98d5d3d24820_bg.wasm" crossorigin="anonymous" integrity="sha384-Il/zNcAUvpbw3M/mSUf6anCkg8cU59mpThpzwXgzNg7D6CUh4YYHFETZzmOrKT6A" as="fetch" type="application/wasm"></head>
+  <body>
+  </body>
+</html>
