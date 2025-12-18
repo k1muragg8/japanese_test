@@ -3,6 +3,7 @@ use chrono::{Utc, DateTime};
 use crate::data::get_all_kana;
 use std::str::FromStr;
 use serde::{Serialize, Deserialize};
+use rand::Rng;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Card {
@@ -18,6 +19,9 @@ pub struct Card {
     pub step: i64,
     // Calculated interval (seconds) for display/logic, mostly virtual or stored for short-term scheduling
     pub interval: i64,
+    // Leech Fields
+    pub lapses: i64,
+    pub suspended: bool,
 }
 
 impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for Card {
@@ -33,6 +37,9 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for Card {
         let step: i64 = row.try_get("step").unwrap_or(0);
         let interval: i64 = row.try_get("interval").unwrap_or(0);
 
+        let lapses: i64 = row.try_get("lapses").unwrap_or(0);
+        let suspended: bool = row.try_get("suspended").unwrap_or(false);
+
         Ok(Card {
             id: kana_char.clone(),
             kana_char,
@@ -43,6 +50,8 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for Card {
             state,
             step,
             interval,
+            lapses,
+            suspended,
         })
     }
 }
@@ -82,19 +91,23 @@ impl Db {
                 difficulty REAL DEFAULT 5.0,
                 last_review DATETIME,
                 state INTEGER DEFAULT 0,
-                step INTEGER DEFAULT 0
+                step INTEGER DEFAULT 0,
+                lapses INTEGER DEFAULT 0,
+                suspended BOOLEAN DEFAULT 0
             );
             "#
         )
         .execute(&self.pool)
         .await?;
 
-        // FSRS & State Machine Migration: Add columns if they don't exist
+        // FSRS & State Machine & Leech Migration: Add columns if they don't exist
         let _ = sqlx::query("ALTER TABLE progress ADD COLUMN stability REAL DEFAULT 86400.0").execute(&self.pool).await;
         let _ = sqlx::query("ALTER TABLE progress ADD COLUMN difficulty REAL DEFAULT 5.0").execute(&self.pool).await;
         let _ = sqlx::query("ALTER TABLE progress ADD COLUMN last_review DATETIME").execute(&self.pool).await;
         let _ = sqlx::query("ALTER TABLE progress ADD COLUMN state INTEGER DEFAULT 0").execute(&self.pool).await;
         let _ = sqlx::query("ALTER TABLE progress ADD COLUMN step INTEGER DEFAULT 0").execute(&self.pool).await;
+        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN lapses INTEGER DEFAULT 0").execute(&self.pool).await;
+        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN suspended BOOLEAN DEFAULT 0").execute(&self.pool).await;
 
         Ok(())
     }
@@ -118,27 +131,23 @@ impl Db {
     }
 
     pub async fn get_next_batch(&self) -> anyhow::Result<Vec<Card>> {
-        // Fetch Priority:
-        // 1. Learning/Relearning (State 1, 3) where DUE.
-        //    DUE means: (now - last_review) >= interval (in seconds).
-        // 2. Review (State 2) where DUE.
-        //    DUE means: (now - last_review) >= interval (in seconds, derived from stability).
-        // 3. New (State 0).
-
         let limit = 20;
         let cards = sqlx::query_as::<_, Card>(
             r#"
             SELECT * FROM progress
             WHERE
-                -- Priority 1 & 2: Due Cards (Learning/Relearning/Review)
-                (
-                    state IN (1, 2, 3)
-                    AND
-                    (strftime('%s', 'now') - strftime('%s', last_review)) >= interval
+                suspended = 0 -- Exclude suspended cards (Leeches)
+                AND (
+                    -- Priority 1 & 2: Due Cards (Learning/Relearning/Review)
+                    (
+                        state IN (1, 2, 3)
+                        AND
+                        (strftime('%s', 'now') - strftime('%s', last_review)) >= interval
+                    )
+                    OR
+                    -- Priority 3: New Cards
+                    (state = 0)
                 )
-                OR
-                -- Priority 3: New Cards
-                (state = 0)
             ORDER BY
                 -- Order Logic:
                 -- 1. Due Learning/Relearning (States 1, 3) first
@@ -177,6 +186,13 @@ impl Db {
         let mut state = card.state;
         let mut step = card.step;
         let mut interval = 0; // Will be set logic below
+        let mut lapses = card.lapses;
+        let mut suspended = card.suspended;
+
+        if suspended {
+            // Already suspended, do nothing (shouldn't happen via get_next_batch but defensive)
+            return Ok(0);
+        }
 
         if state == 0 || state == 1 {
             // --- New (0) & Learning (1) ---
@@ -213,9 +229,33 @@ impl Db {
                 // Update Difficulty
                 d = d - 0.2;
 
-                interval = s as i64;
+                // Fuzzing for State 2 (Long-term Review)
+                let mut rng = rand::thread_rng();
+                let fuzz_factor: f64 = rng.gen_range(0.95..1.05);
+                interval = (s * fuzz_factor) as i64;
+
             } else {
                 // Wrong (Lapse) -> Downgrade to Relearning
+                lapses += 1;
+
+                // Leech Check
+                if lapses >= 8 {
+                    suspended = true;
+                    // Persist suspension
+                    sqlx::query(
+                        "UPDATE progress SET lapses = ?, suspended = ? WHERE kana_char = ?"
+                    )
+                    .bind(lapses)
+                    .bind(suspended)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+                    tx.commit().await?;
+
+                    println!("Card {} suspended as Leech.", id); // Optional log
+                    return Ok(0); // Suspended, interval irrelevant
+                }
+
                 state = 3; // Relearning
                 step = 0;
                 interval = 600; // 10 min
@@ -231,7 +271,7 @@ impl Db {
             if correct {
                 // Re-Graduate
                 state = 2; // Back to Review
-                interval = s as i64; // Restore stability as interval
+                interval = s as i64; // Restore stability as interval (no fuzzing usually for re-grad)
             } else {
                 // Wrong: Reset Relearning step
                 interval = 600; // 10 min
@@ -246,7 +286,7 @@ impl Db {
         if interval < 60 { interval = 60; }
 
         sqlx::query(
-            "UPDATE progress SET stability = ?, difficulty = ?, last_review = ?, state = ?, step = ?, interval = ? WHERE kana_char = ?"
+            "UPDATE progress SET stability = ?, difficulty = ?, last_review = ?, state = ?, step = ?, interval = ?, lapses = ?, suspended = ? WHERE kana_char = ?"
         )
         .bind(s)
         .bind(d)
@@ -254,6 +294,8 @@ impl Db {
         .bind(state)
         .bind(step)
         .bind(interval)
+        .bind(lapses)
+        .bind(suspended)
         .bind(id)
         .execute(&mut *tx)
         .await?;
@@ -268,8 +310,11 @@ impl Db {
             r#"
             SELECT count(*) FROM progress
             WHERE
-                (state IN (1, 2, 3) AND (strftime('%s', 'now') - strftime('%s', last_review)) >= interval)
-                OR (state = 0)
+                suspended = 0
+                AND (
+                    (state IN (1, 2, 3) AND (strftime('%s', 'now') - strftime('%s', last_review)) >= interval)
+                    OR (state = 0)
+                )
             "#
          )
             .fetch_one(&self.pool)
