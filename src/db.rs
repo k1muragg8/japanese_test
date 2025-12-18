@@ -13,6 +13,11 @@ pub struct Card {
     pub stability: f64,
     pub difficulty: f64,
     pub last_review: Option<DateTime<Utc>>,
+    // State Machine Fields
+    pub state: i64, // 0: New, 1: Learning, 2: Review, 3: Relearning
+    pub step: i64,
+    // Calculated interval (seconds) for display/logic, mostly virtual or stored for short-term scheduling
+    pub interval: i64,
 }
 
 impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for Card {
@@ -22,9 +27,11 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for Card {
 
         let stability: f64 = row.try_get("stability").unwrap_or(86400.0);
         let difficulty: f64 = row.try_get("difficulty").unwrap_or(5.0);
-
-        // Handle last_review potentially being null (new cards) or from legacy
         let last_review: Option<DateTime<Utc>> = row.try_get("last_review").ok();
+
+        let state: i64 = row.try_get("state").unwrap_or(0);
+        let step: i64 = row.try_get("step").unwrap_or(0);
+        let interval: i64 = row.try_get("interval").unwrap_or(0);
 
         Ok(Card {
             id: kana_char.clone(),
@@ -33,6 +40,9 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for Card {
             stability,
             difficulty,
             last_review,
+            state,
+            step,
+            interval,
         })
     }
 }
@@ -59,7 +69,6 @@ impl Db {
     }
 
     async fn migrate(&self) -> anyhow::Result<()> {
-        // Initial Table Creation (if not exists)
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS progress (
@@ -68,20 +77,24 @@ impl Db {
                 interval INTEGER DEFAULT 0,
                 easiness REAL DEFAULT 2.5,
                 repetitions INTEGER DEFAULT 0,
-                next_review_date DATETIME DEFAULT CURRENT_TIMESTAMP
+                next_review_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                stability REAL DEFAULT 86400.0,
+                difficulty REAL DEFAULT 5.0,
+                last_review DATETIME,
+                state INTEGER DEFAULT 0,
+                step INTEGER DEFAULT 0
             );
             "#
         )
         .execute(&self.pool)
         .await?;
 
-        // FSRS Migration: Add columns if they don't exist
-        // SQLite doesn't support IF NOT EXISTS in ADD COLUMN, so we catch errors
-        // or check pragma. A simple way is to try adding and ignore duplicate column error.
-
+        // FSRS & State Machine Migration: Add columns if they don't exist
         let _ = sqlx::query("ALTER TABLE progress ADD COLUMN stability REAL DEFAULT 86400.0").execute(&self.pool).await;
         let _ = sqlx::query("ALTER TABLE progress ADD COLUMN difficulty REAL DEFAULT 5.0").execute(&self.pool).await;
         let _ = sqlx::query("ALTER TABLE progress ADD COLUMN last_review DATETIME").execute(&self.pool).await;
+        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN state INTEGER DEFAULT 0").execute(&self.pool).await;
+        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN step INTEGER DEFAULT 0").execute(&self.pool).await;
 
         Ok(())
     }
@@ -105,28 +118,40 @@ impl Db {
     }
 
     pub async fn get_next_batch(&self) -> anyhow::Result<Vec<Card>> {
-        // FSRS Logic for Fetching:
-        // Prioritize by Retrievability (R) ascending.
-        // R = 0.9 ^ (elapsed_days / stability)
-        // elapsed_seconds = (now - last_review)
-        // We want lowest R first.
-        // Lower R means (elapsed / stability) is HIGHER.
-        // So we order by (elapsed_seconds / stability) DESC.
-        // COALESCE(last_review, 0) handles new cards (infinite elapsed -> top priority? Or handle separately).
-        // Let's treat New Cards (last_review IS NULL) as high priority or mix them.
-        // Standard approach: Due cards (R < 0.9) first, then New.
-
-        // For simplicity and "show lowest retention first":
-        // Sort by: (strftime('%s', 'now') - strftime('%s', last_review)) / stability DESC
-        // New cards (last_review NULL) should appear.
+        // Fetch Priority:
+        // 1. Learning/Relearning (State 1, 3) where DUE.
+        //    DUE means: (now - last_review) >= interval (in seconds).
+        // 2. Review (State 2) where DUE.
+        //    DUE means: (now - last_review) >= interval (in seconds, derived from stability).
+        // 3. New (State 0).
 
         let limit = 20;
         let cards = sqlx::query_as::<_, Card>(
             r#"
             SELECT * FROM progress
+            WHERE
+                -- Priority 1 & 2: Due Cards (Learning/Relearning/Review)
+                (
+                    state IN (1, 2, 3)
+                    AND
+                    (strftime('%s', 'now') - strftime('%s', last_review)) >= interval
+                )
+                OR
+                -- Priority 3: New Cards
+                (state = 0)
             ORDER BY
-                CASE WHEN last_review IS NULL THEN 1 ELSE 0 END DESC, -- New cards first? Or Review?
-                (strftime('%s', 'now') - strftime('%s', last_review)) / stability DESC
+                -- Order Logic:
+                -- 1. Due Learning/Relearning (States 1, 3) first
+                CASE WHEN state IN (1, 3) THEN 0 ELSE 1 END ASC,
+
+                -- 2. Due Review (State 2) next
+                CASE WHEN state = 2 THEN 0 ELSE 1 END ASC,
+
+                -- 3. New (State 0) last
+                CASE WHEN state = 0 THEN 0 ELSE 1 END ASC,
+
+                -- Tie-breaker for due cards: most overdue first
+                (strftime('%s', 'now') - strftime('%s', last_review)) DESC
             LIMIT ?
             "#
         )
@@ -147,92 +172,104 @@ impl Db {
             .await?;
 
         let now = Utc::now();
-
-        // Defaults if null (from migration)
-        let last_review = card.last_review.unwrap_or(now);
         let mut s = card.stability; // Seconds
         let mut d = card.difficulty;
+        let mut state = card.state;
+        let mut step = card.step;
+        let mut interval = 0; // Will be set logic below
 
-        // 1. Calculate Retention (R)
-        // elapsed in days for formula
-        let elapsed_seconds = (now - last_review).num_seconds().max(0) as f64;
-        #[allow(unused)]
-        let elapsed_days = elapsed_seconds / 86400.0;
+        if state == 0 || state == 1 {
+            // --- New (0) & Learning (1) ---
+            if correct {
+                if step == 0 {
+                    interval = 60; // 1 min
+                    state = 1;
+                    step = 1;
+                } else if step == 1 {
+                    interval = 600; // 10 min
+                    state = 1;
+                    step = 2;
+                } else {
+                    // Graduate
+                    state = 2; // Review
+                    step = 0;
+                    s = 86400.0; // 1 day stability
+                    interval = 86400; // 1 day
+                }
+            } else {
+                // Wrong: Reset
+                state = 1;
+                step = 0;
+                interval = 60; // 1 min
+            }
+        } else if state == 2 {
+            // --- Review (2) ---
+            if correct {
+                // FSRS Logic
+                // Update Stability: S_new = S * (1 + factor * difficulty_weight)
+                let growth_multiplier = 1.0 + (d * 0.2);
+                s = s * growth_multiplier;
 
-        // R is not used directly in update logic provided, but concepts are.
-        // R = 0.9f64.powf(elapsed_days / (s / 86400.0)); // if s is seconds?
-        // Prompt says: "stability (S): How long (in seconds) the memory lasts."
-        // And "R = 0.9 ^ (elapsed_days / stability)".
-        // This implies stability in the formula is DAYS?
-        // Or if stability is seconds, formula should be R = 0.9 ^ (elapsed_sec / s).
-        // Let's assume stability is seconds as defined in struct.
-        // Formula: R = 0.9 ^ (elapsed_seconds / s)
+                // Update Difficulty
+                d = d - 0.2;
 
-        // 2. Update Stability (S)
-        if correct {
-            // S_new = S * (1 + factor * difficulty_weight)
-            // Factor ~ 2.0 heuristic?
-            // "Exponential growth based on how hard it was"
-            // Heuristic: S_new = S * (1.0 + (D * 0.2))
-            let growth_multiplier = 1.0 + (d * 0.2);
-            s = s * growth_multiplier;
-        } else {
-            // Wrong: S_new = S * 0.5
-            s = s * 0.5;
+                interval = s as i64;
+            } else {
+                // Wrong (Lapse) -> Downgrade to Relearning
+                state = 3; // Relearning
+                step = 0;
+                interval = 600; // 10 min
+
+                // Slash Stability
+                s = s * 0.5;
+
+                // Update Difficulty (Harder)
+                d = d + 0.5;
+            }
+        } else if state == 3 {
+            // --- Relearning (3) ---
+            if correct {
+                // Re-Graduate
+                state = 2; // Back to Review
+                interval = s as i64; // Restore stability as interval
+            } else {
+                // Wrong: Reset Relearning step
+                interval = 600; // 10 min
+            }
         }
 
-        // 3. Update Difficulty (D)
-        if correct {
-            d = d - 0.2;
-        } else {
-            d = d + 0.5;
-        }
         // Clamp D
         if d < 1.0 { d = 1.0; }
         if d > 10.0 { d = 10.0; }
 
-        // 4. Next Interval (I)
-        // Target R = 0.9.
-        // Next Interval (sec) = S * (log(0.9) / log(R_current))  <-- This formula from prompt is problematic if R=1.
-        // Re-reading prompt: "Next Interval (sec) = S * (log(0.9) / log(R_current))"
-        // If I assume "Stability" IS the interval where R=0.9, then Next Interval IS S.
-        // The formula might be trying to compensate for "early review"?
-        // But in FSRS, Stability IS the interval length for retrievability 0.9.
-        // So I will set Next Interval = S.
-
-        let next_interval_seconds = s.max(60.0) as i64; // Min 60s
-
-        // Update DB
-        // next_review_date is used for legacy or display?
-        // We update stability, difficulty, last_review.
-        // Note: We update last_review to NOW.
+        // Ensure min interval 60s
+        if interval < 60 { interval = 60; }
 
         sqlx::query(
-            "UPDATE progress SET stability = ?, difficulty = ?, last_review = ? WHERE kana_char = ?"
+            "UPDATE progress SET stability = ?, difficulty = ?, last_review = ?, state = ?, step = ?, interval = ? WHERE kana_char = ?"
         )
         .bind(s)
         .bind(d)
         .bind(now)
+        .bind(state)
+        .bind(step)
+        .bind(interval)
         .bind(id)
         .execute(&mut *tx)
         .await?;
 
         tx.commit().await?;
 
-        Ok(next_interval_seconds)
+        Ok(interval)
     }
 
     pub async fn get_count_due(&self) -> anyhow::Result<i64> {
-         // Count where retention < 0.9?
-         // (now - last_review) / stability > 1 (if S is time to 0.9)
-         // So (now - last_review) > stability
-
          let count: i64 = sqlx::query_scalar(
             r#"
             SELECT count(*) FROM progress
             WHERE
-                last_review IS NOT NULL
-                AND (strftime('%s', 'now') - strftime('%s', last_review)) > stability
+                (state IN (1, 2, 3) AND (strftime('%s', 'now') - strftime('%s', last_review)) >= interval)
+                OR (state = 0)
             "#
          )
             .fetch_one(&self.pool)
