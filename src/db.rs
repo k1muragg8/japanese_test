@@ -4,6 +4,7 @@ use crate::data::get_all_kana;
 use std::str::FromStr;
 use serde::{Serialize, Deserialize};
 use rand::Rng;
+use rand::seq::SliceRandom;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Card {
@@ -135,6 +136,12 @@ impl Db {
         let limit = 20;
 
         // 1. Due / New
+        // Order priority:
+        // 1. Learning/Relearning (1, 3)
+        // 2. Review (2)
+        // 3. New (0)
+        // Within 1 & 2: Overdue first.
+        // Within 3: Random.
         let due_cards = sqlx::query_as::<_, Card>(
             r#"
             SELECT * FROM progress
@@ -145,10 +152,22 @@ impl Db {
                     OR (state = 0)
                 )
             ORDER BY
-                CASE WHEN state IN (1, 3) THEN 0 ELSE 1 END ASC,
-                CASE WHEN state = 2 THEN 0 ELSE 1 END ASC,
-                CASE WHEN state = 0 THEN 0 ELSE 1 END ASC,
-                (strftime('%s', 'now') - strftime('%s', last_review)) DESC
+                -- 1. Priority Groups
+                CASE
+                    WHEN state IN (1, 3) THEN 1
+                    WHEN state = 2 THEN 2
+                    ELSE 3
+                END ASC,
+
+                -- 2. Overdue Logic (Only for states 1, 2, 3)
+                -- Most overdue (largest difference) first
+                CASE
+                    WHEN state IN (1, 2, 3) THEN (strftime('%s', 'now') - strftime('%s', last_review))
+                    ELSE 0
+                END DESC,
+
+                -- 3. Randomize New Cards
+                RANDOM()
             LIMIT ?
             "#
         )
@@ -181,6 +200,9 @@ impl Db {
 
             cards.extend(ahead_cards);
         }
+
+        // 3. Interleaved Practice: Shuffle the final batch
+        cards.shuffle(&mut rand::thread_rng());
 
         Ok(cards)
     }
