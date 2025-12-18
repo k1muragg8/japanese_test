@@ -131,35 +131,23 @@ impl Db {
     }
 
     pub async fn get_next_batch(&self) -> anyhow::Result<Vec<Card>> {
+        let mut cards = Vec::new();
         let limit = 20;
-        let cards = sqlx::query_as::<_, Card>(
+
+        // 1. Due / New
+        let due_cards = sqlx::query_as::<_, Card>(
             r#"
             SELECT * FROM progress
             WHERE
-                suspended = 0 -- Exclude suspended cards (Leeches)
+                suspended = 0
                 AND (
-                    -- Priority 1 & 2: Due Cards (Learning/Relearning/Review)
-                    (
-                        state IN (1, 2, 3)
-                        AND
-                        (strftime('%s', 'now') - strftime('%s', last_review)) >= interval
-                    )
-                    OR
-                    -- Priority 3: New Cards
-                    (state = 0)
+                    (state IN (1, 2, 3) AND (strftime('%s', 'now') - strftime('%s', last_review)) >= interval)
+                    OR (state = 0)
                 )
             ORDER BY
-                -- Order Logic:
-                -- 1. Due Learning/Relearning (States 1, 3) first
                 CASE WHEN state IN (1, 3) THEN 0 ELSE 1 END ASC,
-
-                -- 2. Due Review (State 2) next
                 CASE WHEN state = 2 THEN 0 ELSE 1 END ASC,
-
-                -- 3. New (State 0) last
                 CASE WHEN state = 0 THEN 0 ELSE 1 END ASC,
-
-                -- Tie-breaker for due cards: most overdue first
                 (strftime('%s', 'now') - strftime('%s', last_review)) DESC
             LIMIT ?
             "#
@@ -167,6 +155,32 @@ impl Db {
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
+
+        cards.extend(due_cards);
+
+        if cards.len() < limit as usize {
+            let needed = limit - cards.len() as i64;
+
+            // 2. Review Ahead (Not Due)
+            // Fetch cards that are NOT due but in active states (1, 2, 3)
+            let ahead_cards = sqlx::query_as::<_, Card>(
+                r#"
+                SELECT * FROM progress
+                WHERE
+                    suspended = 0
+                    AND state IN (1, 2, 3)
+                    AND (strftime('%s', 'now') - strftime('%s', last_review)) < interval
+                ORDER BY
+                    (strftime('%s', last_review) + interval) ASC -- Earliest due date first
+                LIMIT ?
+                "#
+            )
+            .bind(needed)
+            .fetch_all(&self.pool)
+            .await?;
+
+            cards.extend(ahead_cards);
+        }
 
         Ok(cards)
     }
@@ -225,15 +239,19 @@ impl Db {
                 // Update Stability: S_new = S * (1 + factor * difficulty_weight)
                 let mut growth_multiplier = 1.0 + (d * 0.2);
 
-                // --- Overdue Bonus (Backlog Killer) ---
+                // --- Interval Factors (Early/Overdue) ---
                 if let Some(last_rev) = card.last_review {
                     let actual_interval = (now - last_rev).num_seconds().max(1) as f64;
                     let scheduled_interval = card.interval.max(1) as f64;
                     let delay_factor = actual_interval / scheduled_interval;
 
                     if delay_factor > 1.0 {
-                        // Bonus: 1.0 + 0.5 * log(delay_factor)
+                        // Bonus for Overdue: 1.0 + 0.5 * log(delay_factor)
                         growth_multiplier *= 1.0 + 0.5 * delay_factor.ln();
+                    } else {
+                        // Dampener for Early Review
+                        // Linear interpolation: delay 0 => growth 1.0; delay 1 => full growth
+                        growth_multiplier = 1.0 + (growth_multiplier - 1.0) * delay_factor;
                     }
                 }
 
@@ -289,8 +307,6 @@ impl Db {
                 // Re-Graduate
                 state = 2; // Back to Review
                 // For re-graduation, we can also apply the 85% retention factor if we trust S is accurate now
-                // But typically we restore S directly or S * factor.
-                // Let's stick to simple restore or slight boost.
                 // Current S is the slashed stability.
                 // Let's use S * 1.6 to be consistent with 85% retention target for Review state.
                 interval = (s * 1.6) as i64;
