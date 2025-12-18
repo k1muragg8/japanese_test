@@ -1,5 +1,3 @@
 target/
 .env
-*.db
-**/*.rs.bk
 .idea
