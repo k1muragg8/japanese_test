@@ -223,16 +223,33 @@ impl Db {
             if correct {
                 // FSRS Logic
                 // Update Stability: S_new = S * (1 + factor * difficulty_weight)
-                let growth_multiplier = 1.0 + (d * 0.2);
+                let mut growth_multiplier = 1.0 + (d * 0.2);
+
+                // --- Overdue Bonus (Backlog Killer) ---
+                if let Some(last_rev) = card.last_review {
+                    let actual_interval = (now - last_rev).num_seconds().max(1) as f64;
+                    let scheduled_interval = card.interval.max(1) as f64;
+                    let delay_factor = actual_interval / scheduled_interval;
+
+                    if delay_factor > 1.0 {
+                        // Bonus: 1.0 + 0.5 * log(delay_factor)
+                        growth_multiplier *= 1.0 + 0.5 * delay_factor.ln();
+                    }
+                }
+
                 s = s * growth_multiplier;
 
                 // Update Difficulty
                 d = d - 0.2;
 
+                // --- Target Retention Tuning (85%) ---
+                // New Interval = S * 1.6
+                let base_interval = s * 1.6;
+
                 // Fuzzing for State 2 (Long-term Review)
                 let mut rng = rand::thread_rng();
                 let fuzz_factor: f64 = rng.gen_range(0.95..1.05);
-                interval = (s * fuzz_factor) as i64;
+                interval = (base_interval * fuzz_factor) as i64;
 
             } else {
                 // Wrong (Lapse) -> Downgrade to Relearning
@@ -271,7 +288,12 @@ impl Db {
             if correct {
                 // Re-Graduate
                 state = 2; // Back to Review
-                interval = s as i64; // Restore stability as interval (no fuzzing usually for re-grad)
+                // For re-graduation, we can also apply the 85% retention factor if we trust S is accurate now
+                // But typically we restore S directly or S * factor.
+                // Let's stick to simple restore or slight boost.
+                // Current S is the slashed stability.
+                // Let's use S * 1.6 to be consistent with 85% retention target for Review state.
+                interval = (s * 1.6) as i64;
             } else {
                 // Wrong: Reset Relearning step
                 interval = 600; // 10 min
