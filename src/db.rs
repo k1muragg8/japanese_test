@@ -139,13 +139,12 @@ impl Db {
         let limit_due = batch_size - new_card_quota; // 15
 
         // 2. Query A (Fetch Due Cards)
-        // Condition: suspended = 0 AND state IN (1, 2, 3) AND is_due
+        // Condition: state IN (1, 2, 3) AND is_due
         let due_cards = sqlx::query_as::<_, Card>(
             r#"
             SELECT * FROM progress
             WHERE
-                suspended = 0
-                AND state IN (1, 2, 3)
+                state IN (1, 2, 3)
                 AND (strftime('%s', 'now') - strftime('%s', last_review)) >= interval
             ORDER BY
                 -- Priority: Learning/Relearning > Review
@@ -174,7 +173,7 @@ impl Db {
             let new_cards = sqlx::query_as::<_, Card>(
                 r#"
                 SELECT * FROM progress
-                WHERE state = 0 AND suspended = 0
+                WHERE state = 0
                 ORDER BY RANDOM()
                 LIMIT ?
                 "#
@@ -198,8 +197,7 @@ impl Db {
                 r#"
                 SELECT * FROM progress
                 WHERE
-                    suspended = 0
-                    AND state IN (1, 2, 3)
+                    state IN (1, 2, 3)
                 ORDER BY
                     -- Due cards first (is_due)
                     CASE
@@ -259,12 +257,7 @@ impl Db {
         let mut step = card.step;
         let mut interval = 0; // Will be set logic below
         let mut lapses = card.lapses;
-        let mut suspended = card.suspended;
-
-        if suspended {
-            // Already suspended, do nothing (shouldn't happen via get_next_batch but defensive)
-            return Ok(0);
-        }
+        let suspended = card.suspended;
 
         if state == 0 || state == 1 {
             // --- New (0) & Learning (1) ---
@@ -331,24 +324,6 @@ impl Db {
                 // Wrong (Lapse) -> Downgrade to Relearning
                 lapses += 1;
 
-                // Leech Check
-                if lapses >= 8 {
-                    suspended = true;
-                    // Persist suspension
-                    sqlx::query(
-                        "UPDATE progress SET lapses = ?, suspended = ? WHERE kana_char = ?"
-                    )
-                    .bind(lapses)
-                    .bind(suspended)
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
-                    tx.commit().await?;
-
-                    println!("Card {} suspended as Leech.", id); // Optional log
-                    return Ok(0); // Suspended, interval irrelevant
-                }
-
                 state = 3; // Relearning
                 step = 0;
                 interval = 600; // 10 min
@@ -406,11 +381,8 @@ impl Db {
             r#"
             SELECT count(*) FROM progress
             WHERE
-                suspended = 0
-                AND (
-                    (state IN (1, 2, 3) AND (strftime('%s', 'now') - strftime('%s', last_review)) >= interval)
-                    OR (state = 0)
-                )
+                (state IN (1, 2, 3) AND (strftime('%s', 'now') - strftime('%s', last_review)) >= interval)
+                OR (state = 0)
             "#
          )
             .fetch_one(&self.pool)
