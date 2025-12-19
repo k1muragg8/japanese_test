@@ -132,79 +132,115 @@ impl Db {
     }
 
     pub async fn get_next_batch(&self) -> anyhow::Result<Vec<Card>> {
-        let mut cards = Vec::new();
-        let limit = 20;
+        let batch_size: usize = 20;
+        let new_card_quota: usize = 5;
 
-        // 1. Due / New
-        // Order priority:
-        // 1. Learning/Relearning (1, 3)
-        // 2. Review (2)
-        // 3. New (0)
-        // Within 1 & 2: Overdue first.
-        // Within 3: Random.
+        // 1. Calculate Limits
+        let limit_due = batch_size - new_card_quota; // 15
+
+        // 2. Query A (Fetch Due Cards)
+        // Condition: suspended = 0 AND state IN (1, 2, 3) AND is_due
         let due_cards = sqlx::query_as::<_, Card>(
             r#"
             SELECT * FROM progress
             WHERE
                 suspended = 0
-                AND (
-                    (state IN (1, 2, 3) AND (strftime('%s', 'now') - strftime('%s', last_review)) >= interval)
-                    OR (state = 0)
-                )
+                AND state IN (1, 2, 3)
+                AND (strftime('%s', 'now') - strftime('%s', last_review)) >= interval
             ORDER BY
-                -- 1. Priority Groups
+                -- Priority: Learning/Relearning > Review
                 CASE
                     WHEN state IN (1, 3) THEN 1
                     WHEN state = 2 THEN 2
                     ELSE 3
                 END ASC,
-
-                -- 2. Overdue Logic (Only for states 1, 2, 3)
-                -- Most overdue (largest difference) first
-                CASE
-                    WHEN state IN (1, 2, 3) THEN (strftime('%s', 'now') - strftime('%s', last_review))
-                    ELSE 0
-                END DESC,
-
-                -- 3. Randomize New Cards
-                RANDOM()
+                -- Overdue: Most overdue first
+                (strftime('%s', 'now') - strftime('%s', last_review)) DESC
             LIMIT ?
             "#
         )
-        .bind(limit)
+        .bind(limit_due as i64)
         .fetch_all(&self.pool)
         .await?;
 
-        cards.extend(due_cards);
+        let mut all_cards = due_cards;
 
-        if cards.len() < limit as usize {
-            let needed = limit - cards.len() as i64;
+        // 3. Query B (Fetch New Cards)
+        // Smart Backfilling: If we fetched fewer due cards, increase new card limit.
+        let slots_remaining = batch_size - all_cards.len();
+        let limit_new = slots_remaining;
 
-            // 2. Review Ahead (Not Due)
-            // Fetch cards that are NOT due but in active states (1, 2, 3)
-            let ahead_cards = sqlx::query_as::<_, Card>(
+        if limit_new > 0 {
+            let new_cards = sqlx::query_as::<_, Card>(
+                r#"
+                SELECT * FROM progress
+                WHERE state = 0 AND suspended = 0
+                ORDER BY RANDOM()
+                LIMIT ?
+                "#
+            )
+            .bind(limit_new as i64)
+            .fetch_all(&self.pool)
+            .await?;
+
+            all_cards.extend(new_cards);
+        }
+
+        // 4. Backfill (if still not full)
+        // This happens if we ran out of New cards (Query B returned < limit_new).
+        // We need to fetch more Due cards (if Query A was capped) or Review Ahead cards.
+        if all_cards.len() < batch_size {
+            let needed = batch_size - all_cards.len();
+
+            // Query C: Fetch generic non-new cards, ordered by importance.
+            // We fetch a bit more (needed + 30) and filter in Rust to avoid complex NOT IN SQL.
+            let backfill_candidates = sqlx::query_as::<_, Card>(
                 r#"
                 SELECT * FROM progress
                 WHERE
                     suspended = 0
                     AND state IN (1, 2, 3)
-                    AND (strftime('%s', 'now') - strftime('%s', last_review)) < interval
                 ORDER BY
-                    (strftime('%s', last_review) + interval) ASC -- Earliest due date first
+                    -- Due cards first (is_due)
+                    CASE
+                        WHEN (strftime('%s', 'now') - strftime('%s', last_review)) >= interval THEN 0
+                        ELSE 1
+                    END ASC,
+                    -- Priority
+                    CASE
+                        WHEN state IN (1, 3) THEN 1
+                        ELSE 2
+                    END ASC,
+                    -- Overdue / Due Soonest
+                    CASE
+                        WHEN (strftime('%s', 'now') - strftime('%s', last_review)) >= interval THEN (strftime('%s', 'now') - strftime('%s', last_review))
+                        ELSE 0
+                    END DESC,
+                    -- For non-due, earliest due date
+                    (strftime('%s', last_review) + interval) ASC
                 LIMIT ?
                 "#
             )
-            .bind(needed)
+            .bind((needed + 30) as i64)
             .fetch_all(&self.pool)
             .await?;
 
-            cards.extend(ahead_cards);
+            let existing_ids: std::collections::HashSet<String> = all_cards.iter().map(|c| c.id.clone()).collect();
+
+            for c in backfill_candidates {
+                if all_cards.len() >= batch_size {
+                    break;
+                }
+                if !existing_ids.contains(&c.id) {
+                    all_cards.push(c);
+                }
+            }
         }
 
-        // 3. Interleaved Practice: Shuffle the final batch
-        cards.shuffle(&mut rand::thread_rng());
+        // 5. Shuffle
+        all_cards.shuffle(&mut rand::thread_rng());
 
-        Ok(cards)
+        Ok(all_cards)
     }
 
     pub async fn update_card(&self, id: &str, correct: bool) -> anyhow::Result<i64> {
