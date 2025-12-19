@@ -18,6 +18,7 @@ pub struct App {
     pub feedback_detail: String,
     pub due_count: i64,
     pub session_start: Instant,
+    pub last_batch_ids: Vec<String>,
 }
 
 impl App {
@@ -35,11 +36,12 @@ impl App {
             feedback_detail: String::new(),
             due_count,
             session_start: Instant::now(),
+            last_batch_ids: Vec::new(),
         })
     }
 
     pub async fn start_quiz(&mut self) {
-        if let Ok(cards) = self.db.get_next_batch().await {
+        if let Ok(cards) = self.db.get_next_batch(&self.last_batch_ids).await {
             self.due_cards = cards;
             self.current_card_index = 0;
             self.user_input.clear();
@@ -107,8 +109,11 @@ impl App {
         self.feedback_detail.clear();
 
         if self.current_card_index >= self.due_cards.len() {
+            // Record current batch as last batch before fetching new
+            self.last_batch_ids = self.due_cards.iter().map(|c| c.id.clone()).collect();
+
             // Fetch next batch (Infinite Mode)
-            if let Ok(cards) = self.db.get_next_batch().await {
+            if let Ok(cards) = self.db.get_next_batch(&self.last_batch_ids).await {
                 if !cards.is_empty() {
                     self.due_cards = cards;
                     self.current_card_index = 0;
