@@ -1,37 +1,47 @@
-# Stage 1: Chef - Compute recipe
-FROM rust:1.83-slim-bookworm AS chef
-RUN cargo install cargo-chef
+# Stage 1: Builder
+FROM rust:1.83-bookworm AS builder
+
+# Install Trunk and WASM target
+RUN rustup target add wasm32-unknown-unknown && \
+    cargo install trunk
+
+# Create app directory
+WORKDIR /usr/src/app
+
+# Copy source code
+COPY . .
+
+# Build Frontend
+WORKDIR /usr/src/app/frontend
+# Release build for frontend (generates ./dist)
+RUN trunk build --release
+
+# Build Backend
+WORKDIR /usr/src/app
+# Release build for backend
+RUN cargo build --release
+
+# Stage 2: Runtime
+FROM debian:bookworm-slim
+
+# Install runtime dependencies (OpenSSL, SQLite)
+RUN apt-get update && \
+    apt-get install -y libsqlite3-0 ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set working directory for the application (DB will be created here)
 WORKDIR /app
 
-# Install system dependencies required for building (C compiler, pkg-config, etc.)
-# Even with bundled SQLite, some crates might need system tools or SSL.
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# Copy Backend Binary
+COPY --from=builder /usr/src/app/target/release/kana-tutor /usr/local/bin/kana-tutor
 
-# Stage 2: Planner - Create lockfile
-FROM chef AS planner
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
+# Copy Frontend Assets
+COPY --from=builder /usr/src/app/frontend/dist /app/frontend/dist
 
-# Stage 3: Builder - Build dependencies and application
-FROM chef AS builder
-COPY --from=planner /app/recipe.json recipe.json
-# Build dependencies - this is the caching layer!
-RUN cargo chef cook --release --recipe-path recipe.json
-# Build application
-COPY . .
-RUN cargo build --release --bin kana-tutor
+# Environment configuration
+ENV RUST_LOG=info
+# Port to expose
+EXPOSE 3000
 
-# Stage 4: Runtime - Minimal image
-# gcr.io/distroless/cc-debian12 contains glibc and libssl/openssl needed for runtime
-FROM gcr.io/distroless/cc-debian12
-COPY --from=builder /app/target/release/kana-tutor /app/kana-tutor
-WORKDIR /app
-
-# Ensure /app is a volume for persistence (kana.db created here)
-VOLUME ["/app"]
-
-ENTRYPOINT ["./kana-tutor"]
+# Command to run the application in web mode
+CMD ["kana-tutor", "--web"]

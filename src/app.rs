@@ -6,21 +6,17 @@ use crate::feedback::FeedbackGenerator;
 pub enum AppState {
     Dashboard,
     Quiz,
-    FakeLog,
 }
 
 pub struct App {
     pub db: Db,
     pub state: AppState,
-    pub previous_state: Option<AppState>, // To restore state after FakeLog
     pub due_cards: Vec<Card>,
     pub current_card_index: usize,
     pub user_input: String,
     pub current_feedback: Option<String>,
     pub feedback_detail: String,
     pub due_count: i64,
-    pub fake_logs: Vec<String>,
-    pub fake_log_index: usize,
     pub session_start: Instant,
 }
 
@@ -29,27 +25,15 @@ impl App {
         let db = Db::new().await?;
         let due_count = db.get_count_due().await?;
 
-        // Initialize with some fake logs so it doesn't look empty immediately
-        let initial_logs = vec![
-            "[INFO] Compiling libc v0.2.147".to_string(),
-            "[INFO] Compiling proc-macro2 v1.0.63".to_string(),
-            "[INFO] Compiling quote v1.0.28".to_string(),
-            "[INFO] Compiling unicode-ident v1.0.9".to_string(),
-            "[INFO] Compiling syn v2.0.22".to_string(),
-        ];
-
         Ok(Self {
             db,
             state: AppState::Dashboard,
-            previous_state: None,
             due_cards: Vec::new(),
             current_card_index: 0,
             user_input: String::new(),
             current_feedback: None,
             feedback_detail: String::new(),
             due_count,
-            fake_logs: initial_logs,
-            fake_log_index: 0,
             session_start: Instant::now(),
         })
     }
@@ -84,8 +68,21 @@ impl App {
 
         if correct {
             self.current_feedback = Some("Correct!".to_string());
-            if let Ok(days) = interval_res {
-                self.feedback_detail = format!("回答正确！\n下次复习: {}天后", days);
+            if let Ok(seconds) = interval_res {
+                // Convert seconds to human readable
+                let days = seconds as f64 / 86400.0;
+                if days < 1.0 {
+                     // Less than a day
+                     let hours = seconds / 3600;
+                     if hours < 1 {
+                         let mins = seconds / 60;
+                         self.feedback_detail = format!("回答正确！\n下次复习: {}分钟后", mins);
+                     } else {
+                         self.feedback_detail = format!("回答正确！\n下次复习: {}小时后", hours);
+                     }
+                } else {
+                     self.feedback_detail = format!("回答正确！\n下次复习: {:.1}天后", days);
+                }
             } else {
                 self.feedback_detail = "回答正确！".to_string();
             }
@@ -134,53 +131,5 @@ impl App {
 
     pub fn handle_backspace(&mut self) {
         self.user_input.pop();
-    }
-
-    pub fn toggle_fake_log(&mut self) {
-        match self.state {
-            AppState::FakeLog => {
-                // Restore previous state or default to Dashboard
-                if let Some(prev) = self.previous_state {
-                    self.state = prev;
-                } else {
-                    self.state = AppState::Dashboard;
-                }
-                self.previous_state = None;
-            }
-            _ => {
-                // Save current state and switch to FakeLog
-                self.previous_state = Some(self.state);
-                self.state = AppState::FakeLog;
-            }
-        }
-    }
-
-    pub fn tick_fake_log(&mut self) {
-        if let AppState::FakeLog = self.state {
-            // Generate a fake log line occasionally
-            self.fake_log_index += 1;
-            if self.fake_log_index % 5 == 0 { // Adjust speed
-                 let crates = ["tokio", "syn", "quote", "serde", "rand", "http", "hyper", "sqlx", "ratatui", "crossterm"];
-                 let statuses = ["Compiling", "Checking", "Downloaded"];
-                 let versions = ["v1.0.0", "v0.4.2", "v2.1.0", "v0.12.33"];
-
-                 use rand::Rng;
-                 let mut rng = rand::thread_rng();
-                 let c = crates[rng.gen_range(0..crates.len())];
-                 let s = statuses[rng.gen_range(0..statuses.len())];
-                 let v = versions[rng.gen_range(0..versions.len())];
-
-                 let line = if s == "Downloaded" {
-                     format!("[INFO] {} {} {}", s, c, v)
-                 } else {
-                     format!("[INFO] {} {} {}", s, c, v)
-                 };
-
-                 self.fake_logs.push(line);
-                 if self.fake_logs.len() > 100 {
-                     self.fake_logs.remove(0);
-                 }
-            }
-        }
     }
 }
