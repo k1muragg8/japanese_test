@@ -23,7 +23,7 @@ pub fn app_router(state: ApiState) -> Router {
 }
 
 async fn get_next_batch(State(state): State<ApiState>) -> impl IntoResponse {
-    match state.db.get_next_batch().await {
+    match state.db.get_next_batch(&[]).await {
         Ok(cards) => Json(cards).into_response(),
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
