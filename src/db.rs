@@ -132,59 +132,54 @@ impl Db {
     }
 
     pub async fn get_next_batch(&self, exclude_ids: &[String]) -> anyhow::Result<Vec<Card>> {
-        // 1. Fetch ALL available cards (ignore suspended status to show leeches)
+        // 1. Fetch ALL available cards (suspended = 0)
         let all_cards = sqlx::query_as::<_, Card>(
-            r#"SELECT * FROM progress"#
+            r#"SELECT * FROM progress WHERE suspended = 0"#
         )
         .fetch_all(&self.pool)
         .await?;
 
         // 2. Filter: Remove exclude_ids
-        let available_cards: Vec<Card> = all_cards
+        let candidates: Vec<Card> = all_cards
             .iter()
             .filter(|c| !exclude_ids.contains(&c.id))
             .cloned()
             .collect();
 
         // Safety fallback: if filtering leaves too few cards, use everyone
-        let mut working_pool = if available_cards.len() < 20 {
+        let mut working_pool = if candidates.len() < 20 {
             all_cards
         } else {
-            available_cards
+            candidates
         };
 
-        // 3. Selection
-        // Part A: Hard Cards (Top 5 by Lapses DESC, Difficulty DESC)
+        // 3. Select Top 5 Weakest
+        // Sort by lapses DESC, difficulty DESC
         working_pool.sort_by(|a, b| {
             b.lapses.cmp(&a.lapses)
                 .then_with(|| b.difficulty.partial_cmp(&a.difficulty).unwrap_or(std::cmp::Ordering::Equal))
         });
 
-        let mut final_batch = Vec::new();
-        let hard_count = 5.min(working_pool.len());
+        let weak_count = 5.min(working_pool.len());
 
         // Take top 5
-        for _ in 0..hard_count {
-            if !working_pool.is_empty() {
-                final_batch.push(working_pool.remove(0));
-            }
-        }
+        // Using drain to remove them from working_pool
+        let weak_cards: Vec<Card> = working_pool.drain(0..weak_count).collect();
 
-        // Part B: Random Rest (Next 15 from remaining)
-        // Shuffle the remaining pool
+        // 4. Select Random Rest
+        // Shuffle the remaining pool (Fisher-Yates via SliceRandom::shuffle)
         working_pool.shuffle(&mut rand::thread_rng());
 
-        let remaining_needed = 20 - final_batch.len();
+        let remaining_needed = 20 - weak_cards.len();
         let take_count = remaining_needed.min(working_pool.len());
 
-        for _ in 0..take_count {
-             if !working_pool.is_empty() {
-                final_batch.push(working_pool.remove(0));
-            }
-        }
+        let mut random_cards: Vec<Card> = working_pool.drain(0..take_count).collect();
 
-        // 4. Combine - Do NOT shuffle final result (Hard cards must come first)
-        Ok(final_batch)
+        // 5. Combine: weak_cards FIRST, then random_cards
+        let mut result = weak_cards;
+        result.append(&mut random_cards);
+
+        Ok(result)
     }
 
     pub async fn update_card(&self, id: &str, correct: bool) -> anyhow::Result<i64> {

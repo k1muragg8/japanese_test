@@ -43,6 +43,7 @@ impl App {
     pub async fn start_quiz(&mut self) {
         if let Ok(cards) = self.db.get_next_batch(&self.last_batch_ids).await {
             self.due_cards = cards;
+            self.last_batch_ids = self.due_cards.iter().map(|c| c.id.clone()).collect();
             self.current_card_index = 0;
             self.user_input.clear();
             self.current_feedback = None;
