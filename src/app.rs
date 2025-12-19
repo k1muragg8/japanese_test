@@ -48,9 +48,9 @@ impl App {
             let current_ids: Vec<String> = self.due_cards.iter().map(|c| c.id.clone()).collect();
             self.recent_batch_ids.extend(current_ids);
 
-            // Truncate to keep only last 80 IDs (4 batches)
-            if self.recent_batch_ids.len() > 80 {
-                let remove_count = self.recent_batch_ids.len() - 80;
+            // Truncate to keep only last 200 IDs (approx. 10 batches)
+            if self.recent_batch_ids.len() > 200 {
+                let remove_count = self.recent_batch_ids.len() - 200;
                 self.recent_batch_ids.drain(0..remove_count);
             }
 
@@ -129,9 +129,9 @@ impl App {
                     let current_ids: Vec<String> = self.due_cards.iter().map(|c| c.id.clone()).collect();
                     self.recent_batch_ids.extend(current_ids);
 
-                    // Truncate to keep only last 80 IDs
-                    if self.recent_batch_ids.len() > 80 {
-                        let remove_count = self.recent_batch_ids.len() - 80;
+                    // Truncate to keep only last 200 IDs
+                    if self.recent_batch_ids.len() > 200 {
+                        let remove_count = self.recent_batch_ids.len() - 200;
                         self.recent_batch_ids.drain(0..remove_count);
                     }
 

@@ -132,57 +132,33 @@ impl Db {
     }
 
     pub async fn get_next_batch(&self, exclude_ids: &[String]) -> anyhow::Result<Vec<Card>> {
-        // 1. Fetch ALL available cards (suspended = 0)
+        // 1. Fetch All: Execute SELECT * FROM progress WHERE suspended = 0.
         let all_cards = sqlx::query_as::<_, Card>(
             r#"SELECT * FROM progress WHERE suspended = 0"#
         )
         .fetch_all(&self.pool)
         .await?;
 
-        // 2. Filter: Remove exclude_ids
-        let candidates: Vec<Card> = all_cards
+        // 2. Filter: Create a list of candidates by excluding any card whose id is present in exclude_ids.
+        let mut candidates: Vec<Card> = all_cards
             .iter()
             .filter(|c| !exclude_ids.contains(&c.id))
             .cloned()
             .collect();
 
-        // Safety fallback: if filtering leaves too few cards, use everyone
-        let mut working_pool = if candidates.len() < 20 {
-            all_cards
-        } else {
-            candidates
-        };
+        // Fallback: If the filtered list is empty (e.g., all cards are in the buffer), fallback to the full list.
+        if candidates.is_empty() {
+            candidates = all_cards;
+        }
 
-        // 3. STEP 1: Fisher-Yates Pre-Shuffle
-        // Crucial: Break the "a, i, u, e, o" database order for cards with equal stats.
-        working_pool.shuffle(&mut rand::thread_rng());
+        // 3. Shuffle: Perform a Fisher-Yates shuffle on the available cards.
+        candidates.shuffle(&mut rand::thread_rng());
 
-        // 4. STEP 2: Identify Weakest
-        // Stable Sort by lapses DESC, difficulty DESC
-        working_pool.sort_by(|a, b| {
-            b.lapses.cmp(&a.lapses)
-                .then_with(|| b.difficulty.partial_cmp(&a.difficulty).unwrap_or(std::cmp::Ordering::Equal))
-        });
+        // 4. Select: Take the first 20 cards from the shuffled list.
+        let take_count = 20.min(candidates.len());
+        let result = candidates.drain(0..take_count).collect();
 
-        let weak_count = 5.min(working_pool.len());
-
-        // Take top 5
-        let weak_cards: Vec<Card> = working_pool.drain(0..weak_count).collect();
-
-        // 5. STEP 3: Randomize the Rest
-        // Shuffle the remaining pool again (Fisher-Yates)
-        working_pool.shuffle(&mut rand::thread_rng());
-
-        let remaining_needed = 20 - weak_cards.len();
-        let take_count = remaining_needed.min(working_pool.len());
-
-        let mut random_cards: Vec<Card> = working_pool.drain(0..take_count).collect();
-
-        // 6. Combine: weak_cards FIRST, then random_cards
-        // Do NOT shuffle result.
-        let mut result = weak_cards;
-        result.append(&mut random_cards);
-
+        // 5. Return: The randomized batch.
         Ok(result)
     }
 
