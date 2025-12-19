@@ -18,7 +18,7 @@ pub struct App {
     pub feedback_detail: String,
     pub due_count: i64,
     pub session_start: Instant,
-    pub last_batch_ids: Vec<String>,
+    pub recent_batch_ids: Vec<String>, // 4-Batch Buffer
 }
 
 impl App {
@@ -36,14 +36,24 @@ impl App {
             feedback_detail: String::new(),
             due_count,
             session_start: Instant::now(),
-            last_batch_ids: Vec::new(),
+            recent_batch_ids: Vec::new(),
         })
     }
 
     pub async fn start_quiz(&mut self) {
-        if let Ok(cards) = self.db.get_next_batch(&self.last_batch_ids).await {
+        if let Ok(cards) = self.db.get_next_batch(&self.recent_batch_ids).await {
             self.due_cards = cards;
-            self.last_batch_ids = self.due_cards.iter().map(|c| c.id.clone()).collect();
+
+            // Add new batch IDs to buffer
+            let current_ids: Vec<String> = self.due_cards.iter().map(|c| c.id.clone()).collect();
+            self.recent_batch_ids.extend(current_ids);
+
+            // Truncate to keep only last 80 IDs (4 batches)
+            if self.recent_batch_ids.len() > 80 {
+                let remove_count = self.recent_batch_ids.len() - 80;
+                self.recent_batch_ids.drain(0..remove_count);
+            }
+
             self.current_card_index = 0;
             self.user_input.clear();
             self.current_feedback = None;
@@ -110,16 +120,24 @@ impl App {
         self.feedback_detail.clear();
 
         if self.current_card_index >= self.due_cards.len() {
-            // Record current batch as last batch before fetching new
-            self.last_batch_ids = self.due_cards.iter().map(|c| c.id.clone()).collect();
-
-            // Fetch next batch (Infinite Mode)
-            if let Ok(cards) = self.db.get_next_batch(&self.last_batch_ids).await {
+            // Fetch next batch (Infinite Mode) using the current buffer
+            if let Ok(cards) = self.db.get_next_batch(&self.recent_batch_ids).await {
                 if !cards.is_empty() {
                     self.due_cards = cards;
+
+                    // Add new batch IDs to buffer
+                    let current_ids: Vec<String> = self.due_cards.iter().map(|c| c.id.clone()).collect();
+                    self.recent_batch_ids.extend(current_ids);
+
+                    // Truncate to keep only last 80 IDs
+                    if self.recent_batch_ids.len() > 80 {
+                        let remove_count = self.recent_batch_ids.len() - 80;
+                        self.recent_batch_ids.drain(0..remove_count);
+                    }
+
                     self.current_card_index = 0;
                 } else {
-                    // Truly empty (shouldn't happen with infinite logic unless DB empty)
+                    // Truly empty
                     self.state = AppState::Dashboard;
                     if let Ok(c) = self.db.get_count_due().await {
                         self.due_count = c;

@@ -153,14 +153,12 @@ impl Db {
             candidates
         };
 
-        // 3. CRITICAL: Pre-Shuffle BEFORE Sort
-        // This ensures that when stats (lapses/difficulty) are tied (e.g. all 0),
-        // the order is random, not alphabetical/database order.
+        // 3. STEP 1: Fisher-Yates Pre-Shuffle
+        // Crucial: Break the "a, i, u, e, o" database order for cards with equal stats.
         working_pool.shuffle(&mut rand::thread_rng());
 
-        // 4. Stable Sort (Weakest First)
-        // Sort by lapses DESC, difficulty DESC
-        // Because we pre-shuffled, ties will remain in random relative order.
+        // 4. STEP 2: Identify Weakest
+        // Stable Sort by lapses DESC, difficulty DESC
         working_pool.sort_by(|a, b| {
             b.lapses.cmp(&a.lapses)
                 .then_with(|| b.difficulty.partial_cmp(&a.difficulty).unwrap_or(std::cmp::Ordering::Equal))
@@ -169,11 +167,10 @@ impl Db {
         let weak_count = 5.min(working_pool.len());
 
         // Take top 5
-        // Using drain to remove them from working_pool
         let weak_cards: Vec<Card> = working_pool.drain(0..weak_count).collect();
 
-        // 5. Select Random Rest
-        // Shuffle the remaining pool (Fisher-Yates via SliceRandom::shuffle)
+        // 5. STEP 3: Randomize the Rest
+        // Shuffle the remaining pool again (Fisher-Yates)
         working_pool.shuffle(&mut rand::thread_rng());
 
         let remaining_needed = 20 - weak_cards.len();
@@ -181,7 +178,7 @@ impl Db {
 
         let mut random_cards: Vec<Card> = working_pool.drain(0..take_count).collect();
 
-        // 6. Final Combine: weak_cards FIRST, then random_cards
+        // 6. Combine: weak_cards FIRST, then random_cards
         // Do NOT shuffle result.
         let mut result = weak_cards;
         result.append(&mut random_cards);
