@@ -1,6 +1,7 @@
 use std::time::Instant;
 use crate::db::{Db, Card};
 use crate::feedback::FeedbackGenerator;
+use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 pub enum AppState {
@@ -9,7 +10,7 @@ pub enum AppState {
 }
 
 pub struct App {
-    pub db: Db,
+    pub db: Arc<Db>,
     pub state: AppState,
     pub due_cards: Vec<Card>,
     pub current_card_index: usize,
@@ -18,12 +19,12 @@ pub struct App {
     pub feedback_detail: String,
     pub due_count: i64,
     pub session_start: Instant,
-    pub recent_batch_ids: Vec<String>, // 4-Batch Buffer
+    pub recent_batch_ids: Vec<String>, // 200-Card Buffer
 }
 
 impl App {
     pub async fn new() -> anyhow::Result<Self> {
-        let db = Db::new().await?;
+        let db = Arc::new(Db::new().await?);
         let due_count = db.get_count_due().await?;
 
         Ok(Self {

@@ -132,34 +132,29 @@ impl Db {
     }
 
     pub async fn get_next_batch(&self, exclude_ids: &[String]) -> anyhow::Result<Vec<Card>> {
-        // 1. Fetch All: Execute SELECT * FROM progress WHERE suspended = 0.
+        // 1. Fetch: SELECT * FROM progress WHERE suspended = 0.
         let all_cards = sqlx::query_as::<_, Card>(
             r#"SELECT * FROM progress WHERE suspended = 0"#
         )
         .fetch_all(&self.pool)
         .await?;
 
-        // 2. Filter: Create a list of candidates by excluding any card whose id is present in exclude_ids.
+        // 2. Filter: Exclude any card present in exclude_ids.
         let mut candidates: Vec<Card> = all_cards
-            .iter()
+            .into_iter()
             .filter(|c| !exclude_ids.contains(&c.id))
-            .cloned()
             .collect();
 
-        // Fallback: If the filtered list is empty (e.g., all cards are in the buffer), fallback to the full list.
-        if candidates.is_empty() {
-            candidates = all_cards;
-        }
+        // 3. Shuffle: Perform Fisher-Yates shuffle on the remaining candidates.
+        let mut rng = rand::thread_rng();
+        candidates.shuffle(&mut rng);
 
-        // 3. Shuffle: Perform a Fisher-Yates shuffle on the available cards.
-        candidates.shuffle(&mut rand::thread_rng());
-
-        // 4. Select: Take the first 20 cards from the shuffled list.
+        // 4. Select: Take the first 20 cards.
         let take_count = 20.min(candidates.len());
-        let result = candidates.drain(0..take_count).collect();
+        let batch: Vec<Card> = candidates.into_iter().take(take_count).collect();
 
         // 5. Return: The randomized batch.
-        Ok(result)
+        Ok(batch)
     }
 
     pub async fn update_card(&self, id: &str, correct: bool) -> anyhow::Result<i64> {
@@ -178,7 +173,7 @@ impl Db {
         let mut step = card.step;
         let mut interval = 0; // Will be set logic below
         let mut lapses = card.lapses;
-        let suspended = card.suspended;
+        let suspended = card.suspended; // Keep suspended as is (though we are removing leech suspension)
 
         if state == 0 || state == 1 {
             // --- New (0) & Learning (1) ---
