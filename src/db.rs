@@ -157,6 +157,27 @@ impl Db {
         Ok(batch)
     }
 
+    pub async fn get_specific_batch(&self, target_ids: &[String]) -> anyhow::Result<Vec<Card>> {
+        // 1. Fetch all cards
+        let all_cards = sqlx::query_as::<_, Card>(
+            r#"SELECT * FROM progress"#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        // 2. Filter: Keep only cards where target_ids.contains(&card.id)
+        let mut batch: Vec<Card> = all_cards
+            .into_iter()
+            .filter(|c| target_ids.contains(&c.id))
+            .collect();
+
+        // 3. Shuffle
+        let mut rng = rand::thread_rng();
+        batch.shuffle(&mut rng);
+
+        Ok(batch)
+    }
+
     pub async fn update_card(&self, id: &str, correct: bool) -> anyhow::Result<i64> {
         let mut tx = self.pool.begin().await?;
 
