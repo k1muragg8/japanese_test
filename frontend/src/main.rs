@@ -2,6 +2,7 @@ use leptos::*;
 use serde::{Deserialize, Serialize};
 use gloo_net::http::Request;
 use leptos::html::Input;
+use wasm_bindgen::JsCast;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Card {
@@ -49,6 +50,9 @@ fn Quiz() -> impl IntoView {
     let (user_input, set_user_input) = create_signal(String::new());
     let (feedback, set_feedback) = create_signal(Option::<(bool, String)>::None);
     let (loading, set_loading) = create_signal(true);
+
+    // Stealth Mode: Font Size Slider (Default 3.0rem)
+    let (font_size, set_font_size) = create_signal(3.0);
 
     // Cycle Status Signals
     let (batch_current, set_batch_current) = create_signal(1);
@@ -200,7 +204,11 @@ fn Quiz() -> impl IntoView {
 
                         view! {
                             <div class="card">
-                                <div class="kana-display">
+                                // Kana Display with Dynamic Font Size
+                                <div
+                                    class="kana-display"
+                                    style=move || format!("font-size: {}rem", font_size.get())
+                                >
                                     {card.kana_char.clone()}
                                 </div>
 
@@ -213,6 +221,28 @@ fn Quiz() -> impl IntoView {
                                         node_ref=input_ref
                                         on:input=move |ev| set_user_input.set(event_target_value(&ev))
                                     />
+
+                                    // --- NEW: Stealth Slider ---
+                                    <div style="margin-top: 20px; display: flex; align-items: center; justify-content: center; gap: 10px; opacity: 0.3; transition: opacity 0.3s;"
+                                         on:mouseenter=|el| { let _ = el.target().expect("el").unchecked_into::<web_sys::HtmlElement>().style().set_property("opacity", "1"); }
+                                         on:mouseleave=|el| { let _ = el.target().expect("el").unchecked_into::<web_sys::HtmlElement>().style().set_property("opacity", "0.3"); }
+                                    >
+                                        <span style="font-size: 10px;">"A"</span>
+                                        <input
+                                            type="range"
+                                            min="0.5"
+                                            max="6.0"
+                                            step="0.1"
+                                            prop:value=move || font_size.get()
+                                            on:input=move |ev| {
+                                                let val = event_target_value(&ev).parse::<f64>().unwrap_or(3.0);
+                                                set_font_size.set(val);
+                                            }
+                                            style="width: 100px; cursor: pointer;"
+                                        />
+                                        <span style="font-size: 14px;">"A"</span>
+                                    </div>
+                                    // ---------------------------
 
                                     {move || match feedback_state.clone() {
                                         None => view! { }.into_view(),
