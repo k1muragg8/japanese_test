@@ -20,15 +20,18 @@ pub struct App {
     pub feedback_detail: String,
     pub due_count: i64,
     pub session_start: Instant,
-    pub recent_batch_ids: Vec<String>, // 200-Card Buffer
-    pub batch_counter: usize,
+    // Cycle Fields
+    pub cycle_seen_ids: Vec<String>,
     pub cycle_mistakes: std::collections::HashSet<String>,
+    pub batch_counter: usize,
+    pub total_cards_count: usize,
 }
 
 impl App {
     pub async fn new() -> anyhow::Result<Self> {
         let db = Arc::new(Db::new().await?);
         let due_count = db.get_count_due().await?;
+        let total_cards_count = db.get_total_count().await?;
 
         Ok(Self {
             db,
@@ -40,34 +43,80 @@ impl App {
             feedback_detail: String::new(),
             due_count,
             session_start: Instant::now(),
-            recent_batch_ids: Vec::new(),
-            batch_counter: 0,
+            cycle_seen_ids: Vec::new(),
             cycle_mistakes: std::collections::HashSet::new(),
+            batch_counter: 0,
+            total_cards_count,
         })
     }
 
     pub async fn start_quiz(&mut self) {
-        if let Ok(cards) = self.db.get_next_batch(&self.recent_batch_ids).await {
-            self.due_cards = cards;
+        self.fetch_batch_logic().await;
+    }
 
-            // Add new batch IDs to buffer
-            let current_ids: Vec<String> = self.due_cards.iter().map(|c| c.id.clone()).collect();
-            self.recent_batch_ids.extend(current_ids);
+    async fn fetch_batch_logic(&mut self) {
+        let mut new_cards: Option<Vec<Card>> = None;
 
-            // Truncate to keep only last 200 IDs (approx. 10 batches)
-            if self.recent_batch_ids.len() > 200 {
-                let remove_count = self.recent_batch_ids.len() - 200;
-                self.recent_batch_ids.drain(0..remove_count);
+        // Using a loop to handle state transitions (Random -> Review -> Random) if needed
+        loop {
+            // Logic: Batches 1-10 (Indices 0-9) are Random
+            if self.batch_counter < 10 {
+                if let Ok(cards) = self.db.get_next_batch(&self.cycle_seen_ids).await {
+                    if !cards.is_empty() {
+                        new_cards = Some(cards.clone());
+                        // Add to seen
+                        let current_ids: Vec<String> = cards.iter().map(|c| c.id.clone()).collect();
+                        self.cycle_seen_ids.extend(current_ids);
+                        break;
+                    } else {
+                        // Deck exhausted early
+                        if !self.cycle_mistakes.is_empty() {
+                             self.batch_counter = 10; // Jump to review
+                             continue; // Loop again to handle batch_counter == 10
+                        } else {
+                             // Full Reset
+                             self.cycle_seen_ids.clear();
+                             self.batch_counter = 0;
+                             // Loop again to fetch random with fresh deck
+                             continue;
+                        }
+                    }
+                }
             }
 
+            // Logic: Batch 11 (Index 10) is Review
+            if self.batch_counter == 10 {
+                 let mistakes: Vec<String> = self.cycle_mistakes.iter().cloned().collect();
+                 if !mistakes.is_empty() {
+                     if let Ok(cards) = self.db.get_specific_batch(&mistakes).await {
+                         new_cards = Some(cards);
+                     }
+                 } else {
+                     // No mistakes? Bonus random batch or immediate reset?
+                     // Prompt: "If no mistakes, give a random bonus batch."
+                     // Fetch simple random batch
+                     if let Ok(cards) = self.db.get_next_batch(&[]).await {
+                         new_cards = Some(cards);
+                     }
+                 }
+                 break;
+            }
+
+            // Safety break
+            break;
+        }
+
+        if let Some(cards) = new_cards {
+            self.due_cards = cards;
             self.current_card_index = 0;
             self.user_input.clear();
             self.current_feedback = None;
             self.feedback_detail.clear();
-
             if !self.due_cards.is_empty() {
                 self.state = AppState::Quiz;
             }
+        } else {
+             self.state = AppState::Dashboard;
         }
     }
 
@@ -109,12 +158,11 @@ impl App {
         } else {
             self.current_feedback = Some(format!("Wrong! Correct was: {}", card.romaji));
 
-            // Track mistakes for cycle review
+            // Track mistakes
             self.cycle_mistakes.insert(card.id.clone());
 
-            // Generate Feedback using local logic
+            // Generate Feedback
             let front_text = card.kana_char.clone();
-
             self.feedback_detail = FeedbackGenerator::generate_explanation(
                 &front_text,
                 &card.romaji,
@@ -132,62 +180,19 @@ impl App {
 
         if self.current_card_index >= self.due_cards.len() {
             // Batch Finished
+
+            // Increment Counter
             self.batch_counter += 1;
 
-            let mut new_cards: Option<Vec<Card>> = None;
-            let mut is_review = false;
-
-            if self.batch_counter >= 10 {
-                // Trigger Review
-                let mistakes: Vec<String> = self.cycle_mistakes.iter().cloned().collect();
-
-                // Reset
+            if self.batch_counter > 10 {
+                // We just finished Batch 11 (Index 10)
+                // Reset Cycle
                 self.batch_counter = 0;
+                self.cycle_seen_ids.clear();
                 self.cycle_mistakes.clear();
-
-                if !mistakes.is_empty() {
-                     if let Ok(cards) = self.db.get_specific_batch(&mistakes).await {
-                         new_cards = Some(cards);
-                         is_review = true;
-                     }
-                }
             }
 
-            // If not review batch (or review batch failed/was empty/no mistakes), fetch normal
-            if new_cards.is_none() {
-                 if let Ok(cards) = self.db.get_next_batch(&self.recent_batch_ids).await {
-                     new_cards = Some(cards);
-                     is_review = false;
-                 }
-            }
-
-            if let Some(cards) = new_cards {
-                if !cards.is_empty() {
-                    self.due_cards = cards;
-
-                    if !is_review {
-                        // Add new batch IDs to buffer ONLY for normal batches
-                        let current_ids: Vec<String> = self.due_cards.iter().map(|c| c.id.clone()).collect();
-                        self.recent_batch_ids.extend(current_ids);
-
-                        // Truncate to keep only last 200 IDs
-                        if self.recent_batch_ids.len() > 200 {
-                            let remove_count = self.recent_batch_ids.len() - 200;
-                            self.recent_batch_ids.drain(0..remove_count);
-                        }
-                    }
-
-                    self.current_card_index = 0;
-                } else {
-                     // Truly empty or error
-                     self.state = AppState::Dashboard;
-                     if let Ok(c) = self.db.get_count_due().await {
-                        self.due_count = c;
-                     }
-                }
-            } else {
-                 self.state = AppState::Dashboard;
-            }
+            self.fetch_batch_logic().await;
         }
     }
 
