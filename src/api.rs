@@ -40,20 +40,12 @@ async fn get_next_batch(State(state): State<ApiState>) -> impl IntoResponse {
         app.start_quiz().await;
     }
 
-    let remaining = if app.total_cards_count > app.cycle_seen_ids.len() {
-        app.total_cards_count - app.cycle_seen_ids.len()
-    } else {
-        0
-    };
+    let remaining = app.total_cards_count.saturating_sub(app.cycle_seen_ids.len());
 
-    // batch_counter is 0-indexed internally (0-10). UI wants 1-11.
-    // However, if we just finished a batch and are waiting for the next, the counter might have incremented?
-    // start_quiz calls fetch_batch_logic which sets due_cards.
-    // If due_cards are set, we are "In" that batch.
-    // batch_counter 0 means Batch 1.
+    // batch_counter is 1-indexed (1-11) as per updated logic
 
     let resp = BatchResponse {
-        batch_current: app.batch_counter + 1,
+        batch_current: app.batch_counter,
         batch_total: 11,
         remaining_in_deck: remaining,
         cards: app.due_cards.clone(),
@@ -79,27 +71,9 @@ async fn submit_answer(
 ) -> impl IntoResponse {
     let mut app = state.app.lock().await;
 
-    // Remove the card from due_cards to ensure progress (if using index based, this might be redundant but safe)
-    // Actually app uses index, removing might mess up index if not careful.
-    // But api is stateless-ish.
-    // App Logic: `submit_answer` uses `current_card_index`.
-    // If the frontend calls submit, we should ideally call `app.submit_answer()`.
-    // But `app.submit_answer` uses `app.user_input`. The API passes `correct` boolean directly.
-    // So we need to update state manually or use DB directly.
-    // The previous implementation used DB directly and ignored App state for submission,
-    // BUT `App` accumulates mistakes now! So we MUST update App state.
-
-    // 1. Find card
-    // Since we are strictly following "10+1" cycle which is stateful in App, we need to ensure App knows about the mistake.
-
     if !payload.correct {
         app.cycle_mistakes.insert(payload.card_id.clone());
     }
-
-    // Also advance the index in App if it matches?
-    // The API might be called out of sync if multiple clients (unlikely).
-    // Let's assume one client.
-    // We should advance `app.current_card_index` so `get_next_batch` knows when to fetch new one.
 
     // If the card submitted is the current one:
     if let Some(card) = app.due_cards.get(app.current_card_index) {
@@ -108,8 +82,8 @@ async fn submit_answer(
 
              // Check if batch finished immediately?
              if app.current_card_index >= app.due_cards.len() {
-                 // Trigger next batch logic?
-                 // Ideally next call to `get_next_batch` triggers it.
+                 // Trigger next batch logic
+                 app.next_card().await;
              }
         }
     }

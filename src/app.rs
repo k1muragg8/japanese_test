@@ -51,72 +51,28 @@ impl App {
     }
 
     pub async fn start_quiz(&mut self) {
-        self.fetch_batch_logic().await;
-    }
+        // Initialize Cycle
+        self.cycle_seen_ids.clear();
+        self.cycle_mistakes.clear();
+        self.batch_counter = 1;
 
-    async fn fetch_batch_logic(&mut self) {
-        let mut new_cards: Option<Vec<Card>> = None;
-
-        // Using a loop to handle state transitions (Random -> Review -> Random) if needed
-        loop {
-            // Logic: Batches 1-10 (Indices 0-9) are Random
-            if self.batch_counter < 10 {
-                if let Ok(cards) = self.db.get_next_batch(&self.cycle_seen_ids).await {
-                    if !cards.is_empty() {
-                        new_cards = Some(cards.clone());
-                        // Add to seen
-                        let current_ids: Vec<String> = cards.iter().map(|c| c.id.clone()).collect();
-                        self.cycle_seen_ids.extend(current_ids);
-                        break;
-                    } else {
-                        // Deck exhausted early
-                        if !self.cycle_mistakes.is_empty() {
-                             self.batch_counter = 10; // Jump to review
-                             continue; // Loop again to handle batch_counter == 10
-                        } else {
-                             // Full Reset
-                             self.cycle_seen_ids.clear();
-                             self.batch_counter = 0;
-                             // Loop again to fetch random with fresh deck
-                             continue;
-                        }
-                    }
-                }
-            }
-
-            // Logic: Batch 11 (Index 10) is Review
-            if self.batch_counter == 10 {
-                 let mistakes: Vec<String> = self.cycle_mistakes.iter().cloned().collect();
-                 if !mistakes.is_empty() {
-                     if let Ok(cards) = self.db.get_specific_batch(&mistakes).await {
-                         new_cards = Some(cards);
-                     }
-                 } else {
-                     // No mistakes? Bonus random batch or immediate reset?
-                     // Prompt: "If no mistakes, give a random bonus batch."
-                     // Fetch simple random batch
-                     if let Ok(cards) = self.db.get_next_batch(&[]).await {
-                         new_cards = Some(cards);
-                     }
-                 }
-                 break;
-            }
-
-            // Safety break
-            break;
-        }
-
-        if let Some(cards) = new_cards {
+        if let Ok(cards) = self.db.get_next_batch(&self.cycle_seen_ids).await {
             self.due_cards = cards;
+
+            // CRITICAL FIX: Track seen IDs immediately
+            let ids: Vec<String> = self.due_cards.iter().map(|c| c.id.clone()).collect();
+            self.cycle_seen_ids.extend(ids);
+
             self.current_card_index = 0;
             self.user_input.clear();
             self.current_feedback = None;
             self.feedback_detail.clear();
+
             if !self.due_cards.is_empty() {
                 self.state = AppState::Quiz;
+            } else {
+                self.state = AppState::Dashboard;
             }
-        } else {
-             self.state = AppState::Dashboard;
         }
     }
 
@@ -178,21 +134,61 @@ impl App {
         self.current_feedback = None;
         self.feedback_detail.clear();
 
-        if self.current_card_index >= self.due_cards.len() {
+        // Loop to handle immediate transitions (e.g. Deck Exhausted -> Force Review)
+        while self.current_card_index >= self.due_cards.len() {
             // Batch Finished
-
-            // Increment Counter
             self.batch_counter += 1;
 
-            if self.batch_counter > 10 {
-                // We just finished Batch 11 (Index 10)
-                // Reset Cycle
-                self.batch_counter = 0;
-                self.cycle_seen_ids.clear();
-                self.cycle_mistakes.clear();
+            if self.batch_counter <= 10 {
+                // Normal Cycle Batch
+                if let Ok(cards) = self.db.get_next_batch(&self.cycle_seen_ids).await {
+                    if !cards.is_empty() {
+                        self.due_cards = cards;
+                        // CRITICAL FIX: Track new IDs
+                        let ids: Vec<String> = self.due_cards.iter().map(|c| c.id.clone()).collect();
+                        self.cycle_seen_ids.extend(ids);
+                        // Batch found, exit loop
+                        break;
+                    } else {
+                        // Deck exhausted early? Trigger review early if mistakes exist, or reset
+                        if !self.cycle_mistakes.is_empty() {
+                            self.batch_counter = 10; // Will increment to 11 in next loop iteration
+                            continue;
+                        } else {
+                            // Full reset
+                            self.start_quiz().await;
+                            return;
+                        }
+                    }
+                }
+            } else if self.batch_counter == 11 {
+                // Review Round
+                let mistakes: Vec<String> = self.cycle_mistakes.iter().cloned().collect();
+                if !mistakes.is_empty() {
+                    if let Ok(cards) = self.db.get_specific_batch(&mistakes).await {
+                        self.due_cards = cards;
+                        break;
+                    }
+                } else {
+                    // No mistakes? Reset and start new cycle immediately
+                    self.start_quiz().await;
+                    return;
+                }
+            } else {
+                // Cycle Complete (Post-Review) -> Reset
+                self.start_quiz().await;
+                return;
             }
+        }
 
-            self.fetch_batch_logic().await;
+        // Ensure index is reset if we loaded new cards (which happens if loop breaks)
+        // If we returned early (start_quiz called), it resets index there.
+        if self.current_card_index >= self.due_cards.len() {
+             self.current_card_index = 0;
+        }
+
+        if self.due_cards.is_empty() {
+             self.state = AppState::Dashboard;
         }
     }
 
