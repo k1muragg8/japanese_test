@@ -21,6 +21,8 @@ pub struct App {
     pub due_count: i64,
     pub session_start: Instant,
     pub recent_batch_ids: Vec<String>, // 200-Card Buffer
+    pub batch_counter: usize,
+    pub cycle_mistakes: std::collections::HashSet<String>,
 }
 
 impl App {
@@ -39,6 +41,8 @@ impl App {
             due_count,
             session_start: Instant::now(),
             recent_batch_ids: Vec::new(),
+            batch_counter: 0,
+            cycle_mistakes: std::collections::HashSet::new(),
         })
     }
 
@@ -105,6 +109,9 @@ impl App {
         } else {
             self.current_feedback = Some(format!("Wrong! Correct was: {}", card.romaji));
 
+            // Track mistakes for cycle review
+            self.cycle_mistakes.insert(card.id.clone());
+
             // Generate Feedback using local logic
             let front_text = card.kana_char.clone();
 
@@ -124,28 +131,59 @@ impl App {
         self.feedback_detail.clear();
 
         if self.current_card_index >= self.due_cards.len() {
-            // Fetch next batch (Infinite Mode) using the current buffer
-            if let Ok(cards) = self.db.get_next_batch(&self.recent_batch_ids).await {
+            // Batch Finished
+            self.batch_counter += 1;
+
+            let mut new_cards: Option<Vec<Card>> = None;
+            let mut is_review = false;
+
+            if self.batch_counter >= 10 {
+                // Trigger Review
+                let mistakes: Vec<String> = self.cycle_mistakes.iter().cloned().collect();
+
+                // Reset
+                self.batch_counter = 0;
+                self.cycle_mistakes.clear();
+
+                if !mistakes.is_empty() {
+                     if let Ok(cards) = self.db.get_specific_batch(&mistakes).await {
+                         new_cards = Some(cards);
+                         is_review = true;
+                     }
+                }
+            }
+
+            // If not review batch (or review batch failed/was empty/no mistakes), fetch normal
+            if new_cards.is_none() {
+                 if let Ok(cards) = self.db.get_next_batch(&self.recent_batch_ids).await {
+                     new_cards = Some(cards);
+                     is_review = false;
+                 }
+            }
+
+            if let Some(cards) = new_cards {
                 if !cards.is_empty() {
                     self.due_cards = cards;
 
-                    // Add new batch IDs to buffer
-                    let current_ids: Vec<String> = self.due_cards.iter().map(|c| c.id.clone()).collect();
-                    self.recent_batch_ids.extend(current_ids);
+                    if !is_review {
+                        // Add new batch IDs to buffer ONLY for normal batches
+                        let current_ids: Vec<String> = self.due_cards.iter().map(|c| c.id.clone()).collect();
+                        self.recent_batch_ids.extend(current_ids);
 
-                    // Truncate to keep only last 200 IDs
-                    if self.recent_batch_ids.len() > 200 {
-                        let remove_count = self.recent_batch_ids.len() - 200;
-                        self.recent_batch_ids.drain(0..remove_count);
+                        // Truncate to keep only last 200 IDs
+                        if self.recent_batch_ids.len() > 200 {
+                            let remove_count = self.recent_batch_ids.len() - 200;
+                            self.recent_batch_ids.drain(0..remove_count);
+                        }
                     }
 
                     self.current_card_index = 0;
                 } else {
-                    // Truly empty
-                    self.state = AppState::Dashboard;
-                    if let Ok(c) = self.db.get_count_due().await {
+                     // Truly empty or error
+                     self.state = AppState::Dashboard;
+                     if let Ok(c) = self.db.get_count_due().await {
                         self.due_count = c;
-                    }
+                     }
                 }
             } else {
                  self.state = AppState::Dashboard;
