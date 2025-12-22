@@ -326,4 +326,11 @@ impl Db {
             .await?;
          Ok(count)
     }
+
+    pub async fn get_total_count(&self) -> anyhow::Result<usize> {
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM progress")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(count as usize)
+    }
 }
