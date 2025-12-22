@@ -30,7 +30,7 @@ struct SubmitResponse {
 #[component]
 fn App() -> impl IntoView {
     view! {
-        <main class="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4 font-sans">
+        <main>
             <Quiz />
         </main>
     }
@@ -50,6 +50,9 @@ fn Quiz() -> impl IntoView {
     // Fetch cards on mount
     create_effect(move |_| {
         spawn_local(async move {
+            // Simulate initialization delay for effect
+            // set_timeout(|| {}, std::time::Duration::from_millis(500));
+
             let fetched_cards: Vec<Card> = Request::get("/api/next_batch")
                 .send()
                 .await
@@ -62,11 +65,10 @@ fn Quiz() -> impl IntoView {
         });
     });
 
-    // Aggressive Auto-Focus Effect (for user convenience only)
+    // Aggressive Auto-Focus
     create_effect(move |_| {
         let _ = loading.get();
         let _ = current_index.get();
-        // Track feedback changes so we can potentially focus if needed
         let _ = feedback.get();
 
         if let Some(input) = input_ref.get() {
@@ -74,14 +76,9 @@ fn Quiz() -> impl IntoView {
         }
     });
 
-    // Aggressive Auto-Focus on State Change: When going back to typing mode
     create_effect(move |_| {
-        // Track the submission state
         let submitted = is_submitted.get();
-
-        // If we are back to typing mode (not submitted)
         if !submitted {
-             // Small delay to ensure DOM update (feedback removed, input potentially re-rendered or just needs focus)
              set_timeout(move || {
                  if let Some(input) = input_ref.get() {
                      let _ = input.focus();
@@ -115,9 +112,9 @@ fn Quiz() -> impl IntoView {
         });
 
         if is_correct {
-            set_feedback.set(Some((true, "Correct!".to_string())));
+            set_feedback.set(Some((true, format!("[SUCCESS] Hash matched. Uploading to database..."))));
         } else {
-            set_feedback.set(Some((false, format!("The answer is \"{}\"", card.romaji))));
+            set_feedback.set(Some((false, format!("[ERROR] Checksum mismatch. Expected: '{}'. Retrying...", card.romaji))));
         }
     };
 
@@ -145,16 +142,14 @@ fn Quiz() -> impl IntoView {
         }
     };
 
-    // Global Window Event Listener for "Infinite Enter" logic
+    // Global Window Event Listener for "Infinite Enter"
     let handle_global_enter = window_event_listener(ev::keydown, move |ev| {
         if ev.key() == "Enter" {
             ev.prevent_default();
 
             if is_submitted.get() {
-                // State B: Feedback shown -> Next Card
                 next_card();
             } else {
-                // State A: Typing -> Submit Answer
                 submit_answer();
             }
         }
@@ -163,70 +158,85 @@ fn Quiz() -> impl IntoView {
     on_cleanup(move || handle_global_enter.remove());
 
     view! {
-        <div class="w-full max-w-md">
+        <div>
+            // Header / Init Sequence
+            <div class="log-line system-msg">"root@kana-server:~# ./init_sequence.sh"</div>
+            <div class="log-line system-msg">"[SYSTEM] Initializing memory buffers..."</div>
+
             {move || {
                 if loading.get() {
                     view! {
-                        <div class="flex justify-center items-center h-64">
-                            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
-                        </div>
+                         <div class="log-line system-msg">"[SYSTEM] Connecting to remote endpoint... <span class='cursor'></span>"</div>
                     }.into_view()
                 } else {
-                    let current_cards = cards.get();
-                    if let Some(card) = current_cards.get(current_index.get()) {
+                     let current_cards = cards.get();
+                     // Count total cards loaded vs index
+                     let total = current_cards.len();
+                     let idx = current_index.get();
+
+                     if let Some(card) = current_cards.get(idx) {
                         let feedback_state = feedback.get();
                         let is_sub = is_submitted.get();
 
                         view! {
-                            <div class="bg-white rounded-3xl shadow-sm border border-gray-100 p-8 flex flex-col items-center text-center transition-all duration-300">
-                                // Kana Display
-                                <h1 class="text-6xl font-bold text-gray-800 mb-8 select-none">
-                                    {card.kana_char.clone()}
-                                </h1>
-
-                                <div class="w-full space-y-4">
-                                    <input
-                                        type="text"
-                                        class="w-full bg-gray-100 text-gray-800 text-center text-xl rounded-full py-3 px-4 focus:outline-none focus:ring-0 transition-all placeholder-gray-400"
-                                        placeholder="Type Romaji..."
-                                        prop:value=user_input
-                                        prop:readonly=is_sub
-                                        node_ref=input_ref
-                                        on:input=move |ev| set_user_input.set(event_target_value(&ev))
-                                        // Removed on:keydown here; using global listener
-                                    />
-
-                                    // Visual Feedback & Hints (No Buttons)
-                                    {move || match feedback_state.clone() {
-                                        None => view! {
-                                            <div class="text-sm text-gray-400 mt-4 h-8 animate-in fade-in duration-300">
-                                                "Press Enter to Check"
-                                            </div>
-                                        }.into_view(),
-                                        Some((is_correct, msg)) => {
-                                            let text_color = if is_correct { "text-green-500" } else { "text-red-500" };
-                                            view! {
-                                                <div class="w-full space-y-4 animate-in fade-in zoom-in duration-200">
-                                                    <div class={format!("text-xl font-bold {}", text_color)}>
-                                                        {msg}
-                                                    </div>
-                                                    <div class="text-sm text-gray-400">
-                                                        "Press Enter to Continue ↵"
-                                                    </div>
-                                                </div>
-                                            }.into_view()
-                                        }
-                                    }}
-                                </div>
+                            <div class="log-line system-msg">
+                                {format!("[SYSTEM] Loaded batch... {} entities found.", total)}
                             </div>
+                            <div class="log-line system-msg">
+                                {format!("[SYSTEM] Processing entity [{}/{}]...", idx + 1, total)}
+                            </div>
+
+                            // The "Card" is now a log entry
+                            <div class="log-line">
+                                <span class="highlight">"> INCOMING_PACKET: "</span>
+                                <span class="highlight text-white" style="font-size: 1.2em;">" [ " {card.kana_char.clone()} " ] "</span>
+                                <span class="system-msg">" type: kana size: 8b"</span>
+                            </div>
+
+                            // Input Area
+                            <div class="log-line" style="margin-top: 10px;">
+                                <span class="prompt">"root@worker:~/answer$"</span>
+                                <input
+                                    type="text"
+                                    prop:value=user_input
+                                    prop:readonly=is_sub
+                                    node_ref=input_ref
+                                    on:input=move |ev| set_user_input.set(event_target_value(&ev))
+                                    autocomplete="off"
+                                    spellcheck="false"
+                                />
+                                // Blinking cursor if focusing input isn't enough visual cue,
+                                // but the input caret is usually visible.
+                                // Let's add a fake block cursor if input is empty?
+                                // Actually standard input caret is fine for 'terminal'.
+                            </div>
+
+                            // Feedback Section
+                            {move || match feedback_state.clone() {
+                                None => view! {
+                                    <div class="log-line system-msg" style="margin-top: 5px; opacity: 0.5;">
+                                        "[WAITING FOR INPUT...]"
+                                    </div>
+                                }.into_view(),
+                                Some((is_correct, msg)) => {
+                                    let msg_class = if is_correct { "log-line success-msg" } else { "log-line error-msg" };
+                                    view! {
+                                        <div class={msg_class} style="margin-top: 5px;">
+                                            {msg}
+                                        </div>
+                                        <div class="log-line system-msg">
+                                            "[SYSTEM] Press Enter to continue..."
+                                        </div>
+                                    }.into_view()
+                                }
+                            }}
                         }.into_view()
-                    } else {
+                     } else {
                         view! {
-                            <div class="bg-white rounded-3xl shadow-sm border border-gray-100 p-8 text-center">
-                                <p class="text-gray-500 text-xl">"All caught up!"</p>
-                            </div>
+                            <div class="log-line system-msg">"[SYSTEM] Batch processing complete."</div>
+                            <div class="log-line highlight">"root@kana-server:~# shutdown -h now"</div>
                         }.into_view()
-                    }
+                     }
                 }
             }}
         </div>

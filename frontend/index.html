@@ -2,9 +2,71 @@
 <html>
   <head>
     <meta charset="utf-8"/>
-    <title>Kana Tutor</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>System Terminal</title>
+    <!-- Removed Tailwind CDN, using custom CSS for terminal look -->
     <link data-trunk rel="rust" data-wasm-opt="z" />
+    <style>
+      body {
+        background-color: #0c0c0c;
+        color: #cccccc;
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        padding: 20px;
+        margin: 0;
+        font-size: 16px;
+        line-height: 1.5;
+      }
+      ::selection {
+        background: #00ff00;
+        color: #0c0c0c;
+      }
+      input {
+        background: transparent;
+        border: none;
+        color: #ffffff;
+        outline: none;
+        font-family: inherit;
+        font-size: inherit;
+        width: 50%;
+      }
+      .prompt {
+        color: #00ff00;
+        margin-right: 8px;
+      }
+      .cursor {
+        display: inline-block;
+        width: 10px;
+        height: 18px;
+        background-color: #00ff00;
+        animation: blink 1s step-end infinite;
+        vertical-align: middle;
+        margin-left: 2px;
+      }
+      @keyframes blink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0; }
+      }
+      .hidden {
+        display: none;
+      }
+      .log-line {
+        margin-bottom: 4px;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .system-msg {
+        color: #666666;
+      }
+      .success-msg {
+        color: #00ff00;
+      }
+      .error-msg {
+        color: #ff3333;
+      }
+      .highlight {
+        color: #ffffff;
+        font-weight: bold;
+      }
+    </style>
   </head>
   <body>
   </body>
