@@ -192,7 +192,7 @@ fn Quiz() -> impl IntoView {
                             </div>
                             <div class="flex justify-between">
                                 <span>{format!("CYCLE: Batch {}/10", if is_review { 10 } else { current })}</span> // 11 is effectively 'Review' of 10
-                                <span>{if is_review { "PURGING MISTAKES" } else { format!("DECK: {}", remaining_cards.get()) }}</span>
+                                <span>{if is_review { "PURGING MISTAKES".to_string() } else { format!("DECK: {}", remaining_cards.get()) }}</span>
                             </div>
                             <div class="flex justify-between text-xs mt-1 text-gray-400">
                                 <span>{format!("MISTAKES: {}", mistakes_count.get())}</span>
