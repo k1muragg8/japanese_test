@@ -9,6 +9,7 @@ pub enum AppState {
     Quiz,
 }
 
+#[allow(unused)]
 pub struct App {
     pub db: Arc<Db>,
     pub state: AppState,
@@ -66,6 +67,7 @@ impl App {
         }
     }
 
+    #[allow(unused)]
     pub async fn submit_answer(&mut self) {
         if self.current_card_index >= self.due_cards.len() {
             return;
@@ -114,6 +116,7 @@ impl App {
         }
     }
 
+    #[allow(unused)]
     pub async fn next_card(&mut self) {
         self.current_card_index += 1;
         self.user_input.clear();
@@ -150,10 +153,12 @@ impl App {
         }
     }
 
+    #[allow(unused)]
     pub fn handle_input_char(&mut self, c: char) {
         self.user_input.push(c);
     }
 
+    #[allow(unused)]
     pub fn handle_backspace(&mut self) {
         self.user_input.pop();
     }

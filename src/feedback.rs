@@ -1,7 +1,9 @@
 use crate::data::KANA_DATA;
 
+#[allow(unused)]
 pub struct FeedbackGenerator;
 
+#[allow(unused)]
 impl FeedbackGenerator {
     pub fn generate_explanation(correct_kana: &str, correct_romaji: &str, user_input: &str) -> String {
         let trimmed_input = user_input.trim();
