@@ -62,6 +62,16 @@ fn Quiz() -> impl IntoView {
     let (is_review_mode, set_is_review_mode) = create_signal(false);
     let (mistakes_count, set_mistakes_count) = create_signal(0);
 
+    // Derived signal for UI
+    let current_batch_display = move || {
+        let current = batch_current.get();
+        if is_review_mode.get() || current > 10 {
+             format!("REVIEW: Batch {}/10", current)
+        } else {
+             format!("Batch {}/10", current)
+        }
+    };
+
     let is_submitted = create_memo(move |_| feedback.get().is_some());
     let input_ref = create_node_ref::<Input>();
 
@@ -195,15 +205,12 @@ fn Quiz() -> impl IntoView {
                     format!("{} Cards", val)
                 };
 
-                let batch_display = if is_review {
-                    view! { <span class="cycle-badge" style="background-color: #ed4956; color: white;">"REVIEW MODE"</span> }.into_view()
-                } else {
-                    view! { <span class="cycle-badge">{format!("Batch {}/10", current)}</span> }.into_view()
-                };
+                let badge_style = if is_review { "background-color: #ed4956; color: white;" } else { "" };
+                let display_text = current_batch_display();
 
                 view! {
                     <div class="status-header">
-                        {batch_display}
+                        <span class="cycle-badge" style=badge_style>{display_text}</span>
                         <span>{remaining_display}</span>
                     </div>
                 }

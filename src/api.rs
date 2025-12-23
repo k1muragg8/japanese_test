@@ -50,7 +50,7 @@ async fn get_next_batch(State(state): State<ApiState>) -> impl IntoResponse {
         batch_current: app.batch_counter,
         batch_total: 11,
         remaining_in_deck: remaining,
-        is_review: app.batch_counter == 11,
+        is_review: app.batch_counter >= 11,
         cycle_mistakes_count: app.cycle_mistakes.len(),
         cards: app.due_cards.clone(),
     };
@@ -75,7 +75,29 @@ async fn submit_answer(
 ) -> impl IntoResponse {
     let mut app = state.app.lock().await;
 
-    if !payload.correct {
+    // We trust App::submit_answer to handle mistakes insertion/removal
+    // because it has the context of whether it's review mode or not.
+    // However, App::submit_answer relies on `user_input` being set?
+    // Wait, App::submit_answer sets user_input? No, it uses it.
+    // The previous implementation of App::submit_answer used `self.user_input`.
+    // But here in API we receive `correct` bool directly.
+    // We should probably rely on the payload.
+    // But `App::submit_answer` is designed for stateful interaction (TUI/Frontend matching).
+    // Let's modify App logic or handle it here.
+
+    // Actually, `App::submit_answer` logic regarding mistakes was:
+    // If correct && batch >= 11 -> remove mistake.
+    // If wrong -> insert mistake.
+
+    // So we should replicate that logic here or call a method on App that does it.
+    // Since we are modifying `app.rs`, let's make sure we update the API handler to match the logic.
+
+    // Logic:
+    if payload.correct {
+        if app.batch_counter >= 11 {
+            app.cycle_mistakes.remove(&payload.card_id);
+        }
+    } else {
         app.cycle_mistakes.insert(payload.card_id.clone());
     }
 
