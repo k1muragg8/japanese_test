@@ -92,6 +92,11 @@ impl App {
         let interval_res = self.db.update_card(&card.id, correct).await;
 
         if correct {
+            // In Review Mode (Batch 11), correct answer removes mistake
+            if self.batch_counter == 11 {
+                self.cycle_mistakes.remove(&card.id);
+            }
+
             self.current_feedback = Some("Correct!".to_string());
             if let Ok(seconds) = interval_res {
                 // Convert seconds to human readable
@@ -114,7 +119,7 @@ impl App {
         } else {
             self.current_feedback = Some(format!("Wrong! Correct was: {}", card.romaji));
 
-            // Track mistakes
+            // Track mistakes (Always add/ensure in set)
             self.cycle_mistakes.insert(card.id.clone());
 
             // Generate Feedback
@@ -134,55 +139,57 @@ impl App {
         self.current_feedback = None;
         self.feedback_detail.clear();
 
-        // Loop to handle immediate transitions (e.g. Deck Exhausted -> Force Review)
+        // Check if current batch is finished
         while self.current_card_index >= self.due_cards.len() {
-            // Batch Finished
-            self.batch_counter += 1;
+            // Determine next step based on current batch
+            if self.batch_counter < 10 {
+                // Batches 1-9 -> Go to next batch
+                self.batch_counter += 1;
 
-            if self.batch_counter <= 10 {
-                // Normal Cycle Batch
+                // Try to fetch next batch
                 if let Ok(cards) = self.db.get_next_batch(&self.cycle_seen_ids).await {
                     if !cards.is_empty() {
                         self.due_cards = cards;
-                        // CRITICAL FIX: Track new IDs
+                        // Track seen IDs
                         let ids: Vec<String> = self.due_cards.iter().map(|c| c.id.clone()).collect();
                         self.cycle_seen_ids.extend(ids);
-                        // Batch found, exit loop
-                        break;
+                        break; // Loaded new batch
                     } else {
-                        // Deck exhausted early? Trigger review early if mistakes exist, or reset
-                        if !self.cycle_mistakes.is_empty() {
-                            self.batch_counter = 10; // Will increment to 11 in next loop iteration
-                            continue;
-                        } else {
-                            // Full reset
-                            self.start_quiz().await;
-                            return;
-                        }
-                    }
-                }
-            } else if self.batch_counter == 11 {
-                // Review Round
-                let mistakes: Vec<String> = self.cycle_mistakes.iter().cloned().collect();
-                if !mistakes.is_empty() {
-                    if let Ok(cards) = self.db.get_specific_batch(&mistakes).await {
-                        self.due_cards = cards;
-                        break;
+                        // Deck exhausted early -> Force Review Mode
+                        self.batch_counter = 11;
+                        // Fall through to Batch 11 logic
                     }
                 } else {
-                    // No mistakes? Reset and start new cycle immediately
+                    // Error? Force Review Mode
+                    self.batch_counter = 11;
+                }
+            } else if self.batch_counter == 10 {
+                // Batch 10 finished -> Enter Review Mode
+                self.batch_counter = 11;
+            }
+
+            // Handle Batch 11 (Review Mode) Logic
+            if self.batch_counter == 11 {
+                if self.cycle_mistakes.is_empty() {
+                    // Clean sweep! Reset cycle.
                     self.start_quiz().await;
                     return;
+                } else {
+                    // Load mistakes for review
+                    let mistakes: Vec<String> = self.cycle_mistakes.iter().cloned().collect();
+                    if let Ok(cards) = self.db.get_specific_batch(&mistakes).await {
+                        self.due_cards = cards;
+                        break; // Loaded review batch
+                    } else {
+                        // DB Error? Reset to avoid infinite loop
+                        self.start_quiz().await;
+                        return;
+                    }
                 }
-            } else {
-                // Cycle Complete (Post-Review) -> Reset
-                self.start_quiz().await;
-                return;
             }
         }
 
-        // Ensure index is reset if we loaded new cards (which happens if loop breaks)
-        // If we returned early (start_quiz called), it resets index there.
+        // Reset index for the new batch
         if self.current_card_index >= self.due_cards.len() {
              self.current_card_index = 0;
         }
