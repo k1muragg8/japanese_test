@@ -26,9 +26,9 @@ pub fn app_router(state: ApiState) -> Router {
 
 #[derive(Serialize)]
 pub struct BatchResponse {
-    pub batch_current: usize, // 1-11
-    pub batch_total: usize,   // 11
-    pub remaining_in_deck: usize, // (Total DB Count - cycle_seen_ids.len())
+    pub batch_current: usize,
+    pub batch_total: usize,     // 动态的总轮数
+    pub remaining_in_deck: usize,
     pub is_review: bool,
     pub cycle_mistakes_count: usize,
     pub cards: Vec<Card>,
@@ -37,24 +37,24 @@ pub struct BatchResponse {
 async fn get_next_batch(State(state): State<ApiState>) -> impl IntoResponse {
     let mut app = state.app.lock().await;
 
-    // Check if we need to fetch a new batch
-    if app.due_cards.is_empty() {
-        // Only start fresh if truly empty (e.g. init)
+    // 状态流转检查：如果当前批次空了或完了，尝试推到下一状态
+    let is_batch_empty = app.due_cards.is_empty();
+    let is_batch_finished = app.current_card_index >= app.due_cards.len();
+
+    if is_batch_empty {
         app.start_quiz().await;
-    } else if app.current_card_index >= app.due_cards.len() {
-        // If current batch finished, force transition to next batch/state
+    } else if is_batch_finished {
         app.next_card().await;
     }
 
     let remaining = app.total_cards_count.saturating_sub(app.cycle_seen_ids.len());
 
-    // batch_counter is 1-indexed (1-11) as per updated logic
-
     let resp = BatchResponse {
         batch_current: app.batch_counter,
-        batch_total: 11,
+        // 如果在复习模式，就不显示总轮数了（或者显示当前轮数），否则显示预估总数
+        batch_total: if app.is_review_phase { app.batch_counter } else { app.estimated_total_batches },
         remaining_in_deck: remaining,
-        is_review: app.batch_counter >= 11,
+        is_review: app.is_review_phase,
         cycle_mistakes_count: app.cycle_mistakes.len(),
         cards: app.due_cards.clone(),
     };
@@ -79,45 +79,28 @@ async fn submit_answer(
 ) -> impl IntoResponse {
     let mut app = state.app.lock().await;
 
-    // We trust App::submit_answer to handle mistakes insertion/removal
-    // because it has the context of whether it's review mode or not.
-    // However, App::submit_answer relies on `user_input` being set?
-    // Wait, App::submit_answer sets user_input? No, it uses it.
-    // The previous implementation of App::submit_answer used `self.user_input`.
-    // But here in API we receive `correct` bool directly.
-    // We should probably rely on the payload.
-    // But `App::submit_answer` is designed for stateful interaction (TUI/Frontend matching).
-    // Let's modify App logic or handle it here.
-
-    // Actually, `App::submit_answer` logic regarding mistakes was:
-    // If correct && batch >= 11 -> remove mistake.
-    // If wrong -> insert mistake.
-
-    // So we should replicate that logic here or call a method on App that does it.
-    // Since we are modifying `app.rs`, let's make sure we update the API handler to match the logic.
-
-    // Logic:
+    // 1. 处理错题记录逻辑
     if payload.correct {
-        if app.batch_counter >= 11 {
+        // 如果在复习模式，答对了就从错题本移除
+        if app.is_review_phase {
             app.cycle_mistakes.remove(&payload.card_id);
         }
     } else {
+        // 答错永远进错题本
         app.cycle_mistakes.insert(payload.card_id.clone());
     }
 
-    // If the card submitted is the current one:
-    if let Some(card) = app.due_cards.get(app.current_card_index) {
-        if card.id == payload.card_id {
-             app.current_card_index += 1;
+    // 2. 强制推进进度
+    // 只要接收到提交，就无条件 +1，防止死锁
+    app.current_card_index += 1;
 
-             // Check if batch finished immediately?
-             if app.current_card_index >= app.due_cards.len() {
-                 // Trigger next batch logic
-                 app.next_card().await;
-             }
-        }
+    // 3. 预判：如果这组做完了，立刻触发下一组准备工作
+    // 这样当前端请求 next_batch 时，数据已经准备好了
+    if app.current_card_index >= app.due_cards.len() {
+        app.next_card().await;
     }
 
+    // 4. 更新数据库 FSRS 状态
     match app.db.update_card(&payload.card_id, payload.correct).await {
         Ok(interval) => Json(SubmitResponse { new_interval: interval }).into_response(),
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
