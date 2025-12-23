@@ -19,6 +19,8 @@ pub struct BatchResponse {
     pub batch_current: usize,
     pub batch_total: usize,
     pub remaining_in_deck: usize,
+    pub is_review: bool,
+    pub cycle_mistakes_count: usize,
     pub cards: Vec<Card>,
 }
 
@@ -56,8 +58,9 @@ fn Quiz() -> impl IntoView {
 
     // Cycle Status Signals
     let (batch_current, set_batch_current) = create_signal(1);
-    let (remaining_cards, set_remaining_cards) = create_signal(0);
-    let (_mistakes_count, set_mistakes_count) = create_signal(0);
+    let (server_remaining_cards, set_server_remaining_cards) = create_signal(0);
+    let (is_review_mode, set_is_review_mode) = create_signal(false);
+    let (mistakes_count, set_mistakes_count) = create_signal(0);
 
     let is_submitted = create_memo(move |_| feedback.get().is_some());
     let input_ref = create_node_ref::<Input>();
@@ -74,13 +77,9 @@ fn Quiz() -> impl IntoView {
                  if let Ok(batch_data) = resp.json::<BatchResponse>().await {
                      set_cards.set(batch_data.cards);
                      set_batch_current.set(batch_data.batch_current);
-                     set_remaining_cards.set(batch_data.remaining_in_deck);
-
-                     // If batch_current == 1, it means reset happened, clear local mistakes
-                     if batch_data.batch_current == 1 {
-                         set_mistakes_count.set(0);
-                     }
-
+                     set_server_remaining_cards.set(batch_data.remaining_in_deck);
+                     set_is_review_mode.set(batch_data.is_review);
+                     set_mistakes_count.set(batch_data.cycle_mistakes_count);
                      set_current_index.set(0);
                  }
             }
@@ -124,8 +123,17 @@ fn Quiz() -> impl IntoView {
         let is_correct = input_val.trim().eq_ignore_ascii_case(&card.romaji);
         let card_id = card.id.clone();
 
+        // Optimistic Updates
         if !is_correct {
-            set_mistakes_count.update(|c| *c += 1);
+             // In review mode, wrong answer might mean it stays, but we just increment for now.
+             // Actually, mistakes count comes from server for accuracy, but we can increment purely for visual feedback if we want.
+             // However, strictly, let's rely on server response for the count on next batch,
+             // but maybe just update local state if we want real-time feel.
+             // Given requirements: "Calculate as server_deck_remaining - local_index"
+        } else {
+             if is_review_mode.get() {
+                 set_mistakes_count.update(|c| if *c > 0 { *c -= 1 });
+             }
         }
 
         spawn_local(async move {
@@ -172,19 +180,32 @@ fn Quiz() -> impl IntoView {
             // Header
             {move || {
                 let current = batch_current.get();
-                let is_review = current == 11;
-                let review_mode_alert = if is_review {
-                    view! { <div class="review-mode">"Reviewing Mistakes"</div> }.into_view()
+                let is_review = is_review_mode.get();
+
+                // Real-time calculation
+                let remaining_display = if is_review {
+                    // In review mode, show mistakes count
+                    format!("{} Mistakes Left", mistakes_count.get())
                 } else {
-                    view! { }.into_view()
+                    // In normal mode, show deck remaining - current index
+                    // Note: This is an approximation. Ideally server sends remaining in deck excluding current batch.
+                    // Assuming server_remaining_cards is total due - seen.
+                    // We just want to show progress.
+                    let val = server_remaining_cards.get().saturating_sub(current_index.get());
+                    format!("{} Cards", val)
+                };
+
+                let batch_display = if is_review {
+                    view! { <span class="cycle-badge" style="background-color: #ed4956; color: white;">"REVIEW MODE"</span> }.into_view()
+                } else {
+                    view! { <span class="cycle-badge">{format!("Batch {}/10", current)}</span> }.into_view()
                 };
 
                 view! {
                     <div class="status-header">
-                        <span class="cycle-badge">{format!("Batch {}/10", if is_review { 10 } else { current })}</span>
-                        <span>{format!("{} Cards", remaining_cards.get())}</span>
+                        {batch_display}
+                        <span>{remaining_display}</span>
                     </div>
-                    {review_mode_alert}
                 }
             }}
 

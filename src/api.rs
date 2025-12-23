@@ -29,6 +29,8 @@ pub struct BatchResponse {
     pub batch_current: usize, // 1-11
     pub batch_total: usize,   // 11
     pub remaining_in_deck: usize, // (Total DB Count - cycle_seen_ids.len())
+    pub is_review: bool,
+    pub cycle_mistakes_count: usize,
     pub cards: Vec<Card>,
 }
 
@@ -48,6 +50,8 @@ async fn get_next_batch(State(state): State<ApiState>) -> impl IntoResponse {
         batch_current: app.batch_counter,
         batch_total: 11,
         remaining_in_deck: remaining,
+        is_review: app.batch_counter == 11,
+        cycle_mistakes_count: app.cycle_mistakes.len(),
         cards: app.due_cards.clone(),
     };
 
