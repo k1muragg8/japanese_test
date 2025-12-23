@@ -166,9 +166,13 @@ fn Quiz() -> impl IntoView {
         set_feedback.set(None);
         set_user_input.set(String::new());
         let next_idx = current_index.get() + 1;
+        let current_len = cards.get().len();
 
-        if next_idx >= cards.get().len() {
+        if next_idx >= current_len {
+             // Batch Finished: Immediately fetch next batch
              fetch_next_batch();
+             // Reset index locally to avoid out of bounds while loading
+             set_current_index.set(0);
         } else {
             set_current_index.set(next_idx);
         }
