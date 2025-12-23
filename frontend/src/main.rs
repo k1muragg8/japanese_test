@@ -141,7 +141,6 @@ fn Quiz() -> impl IntoView {
         let next_idx = current_index.get() + 1;
         if next_idx >= cards.get().len() {
             fetch_next_batch();
-            set_current_index.set(0);
         } else {
             set_current_index.set(next_idx);
         }
