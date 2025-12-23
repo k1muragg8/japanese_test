@@ -114,7 +114,6 @@ fn Quiz() -> impl IntoView {
         let card_id = card.id.clone();
         let romaji = card.romaji.clone();
 
-        // 乐观更新错题计数 (仅用于 UI 临时反馈，实际由 cards 计算覆盖)
         if is_correct && is_review_mode.get() {
             set_mistakes_count.update(|c| if *c > 0 { *c -= 1 });
         }
@@ -128,11 +127,10 @@ fn Quiz() -> impl IntoView {
 
             set_loading.set(false);
 
-            // 只有等服务器处理完了，才显示反馈、允许下一步
             if is_correct {
                 set_feedback.set(Some((true, "Correct!".to_string())));
             } else {
-                set_feedback.set(Some((false, format!("The answer is \"{}\"", romaji))));
+                set_feedback.set(Some((false, format!("Ans: \"{}\"", romaji))));
             }
         });
     };
@@ -164,11 +162,10 @@ fn Quiz() -> impl IntoView {
                 let _current = batch_current.get();
                 let is_review = is_review_mode.get();
 
-                // 统一使用本地计算公式
                 let local_remaining = cards.get().len().saturating_sub(current_index.get());
 
                 let remaining_display = if is_review {
-                    format!("{} Mistakes Left", local_remaining)
+                    format!("{} Mistakes", local_remaining)
                 } else {
                     let val = server_remaining_cards.get() + local_remaining;
                     format!("{} Cards", val)
@@ -178,7 +175,23 @@ fn Quiz() -> impl IntoView {
 
                 view! {
                     <div class="status-header">
+                        // 1. 左侧：Batch
                         <span class="cycle-badge" style=badge_style>{current_batch_display()}</span>
+
+                        // 2. 中间：Feedback (插入到这里)
+                        {move || match feedback.get() {
+                            None => view! { <span></span> }.into_view(),
+                            Some((is_correct, msg)) => {
+                                let color = if is_correct { "#0095f6" } else { "#ed4956" };
+                                view! {
+                                    <span style=format!("color: {}; font-weight: bold; font-size: 14px;", color)>
+                                        {msg}
+                                    </span>
+                                }.into_view()
+                            }
+                        }}
+
+                        // 3. 右侧：Cards
                         <span>{remaining_display}</span>
                     </div>
                 }
@@ -190,7 +203,6 @@ fn Quiz() -> impl IntoView {
                 } else {
                     let current_cards = cards.get();
                     if let Some(card) = current_cards.get(current_index.get()) {
-                        let feedback_state = feedback.get();
                         let is_sub = is_submitted.get();
                         let is_readonly = is_sub || loading.get();
 
@@ -212,14 +224,7 @@ fn Quiz() -> impl IntoView {
                                             style="width: 100px; cursor: pointer;" />
                                         <span style="font-size: 14px;">"A"</span>
                                     </div>
-
-                                    {move || match feedback_state.clone() {
-                                        None => view! { }.into_view(),
-                                        Some((is_correct, msg)) => {
-                                            let feedback_class = if is_correct { "feedback success" } else { "feedback error" };
-                                            view! { <div class={feedback_class}>{msg}</div> }.into_view()
-                                        }
-                                    }}
+                                    // 这里原本的 Feedback 块已经被移除了
                                 </div>
                             </div>
                         }.into_view()
