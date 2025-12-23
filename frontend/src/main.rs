@@ -64,6 +64,7 @@ fn Quiz() -> impl IntoView {
 
     // Derived signal for UI
     let current_batch_display = move || {
+        #[allow(unused)]
         let current = batch_current.get();
         if is_review_mode.get() || current > 10 {
              format!("REVIEW: Batch {}/10", current)
@@ -189,7 +190,7 @@ fn Quiz() -> impl IntoView {
         <div class="app-container">
             // Header
             {move || {
-                let current = batch_current.get();
+                let _current = batch_current.get();
                 let is_review = is_review_mode.get();
 
                 // Real-time calculation
