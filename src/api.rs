@@ -38,8 +38,12 @@ async fn get_next_batch(State(state): State<ApiState>) -> impl IntoResponse {
     let mut app = state.app.lock().await;
 
     // Check if we need to fetch a new batch
-    if app.due_cards.is_empty() || app.current_card_index >= app.due_cards.len() {
+    if app.due_cards.is_empty() {
+        // Only start fresh if truly empty (e.g. init)
         app.start_quiz().await;
+    } else if app.current_card_index >= app.due_cards.len() {
+        // If current batch finished, force transition to next batch/state
+        app.next_card().await;
     }
 
     let remaining = app.total_cards_count.saturating_sub(app.cycle_seen_ids.len());
