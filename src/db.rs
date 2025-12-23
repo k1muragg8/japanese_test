@@ -1,336 +1,165 @@
-use sqlx::{sqlite::{SqlitePool, SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous}, Pool, Sqlite, ConnectOptions, Row};
-use chrono::{Utc, DateTime};
-use crate::data::get_all_kana;
-use std::str::FromStr;
+use sqlx::{SqlitePool, FromRow};
 use serde::{Serialize, Deserialize};
-use rand::Rng;
-use rand::seq::SliceRandom;
+use anyhow::Result;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use std::str::FromStr;
+use crate::data::get_all_kana; // 引入数据源
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Card {
-    pub id: String, // kana_char
+    pub id: String,
     pub kana_char: String,
     pub romaji: String,
-    // FSRS Fields
     pub stability: f64,
     pub difficulty: f64,
-    pub last_review: Option<DateTime<Utc>>,
-    // State Machine Fields
-    pub state: i64, // 0: New, 1: Learning, 2: Review, 3: Relearning
-    pub step: i64,
-    // Calculated interval (seconds) for display/logic, mostly virtual or stored for short-term scheduling
-    pub interval: i64,
-    // Leech Fields
-    pub lapses: i64,
-    pub suspended: bool,
+    pub last_review: Option<String>,
 }
 
-impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for Card {
-    fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
-        let kana_char: String = row.try_get("kana_char")?;
-        let romaji: String = row.try_get("romaji")?;
-
-        let stability: f64 = row.try_get("stability").unwrap_or(86400.0);
-        let difficulty: f64 = row.try_get("difficulty").unwrap_or(5.0);
-        let last_review: Option<DateTime<Utc>> = row.try_get("last_review").ok();
-
-        let state: i64 = row.try_get("state").unwrap_or(0);
-        let step: i64 = row.try_get("step").unwrap_or(0);
-        let interval: i64 = row.try_get("interval").unwrap_or(0);
-
-        let lapses: i64 = row.try_get("lapses").unwrap_or(0);
-        let suspended: bool = row.try_get("suspended").unwrap_or(false);
-
-        Ok(Card {
-            id: kana_char.clone(),
-            kana_char,
-            romaji,
-            stability,
-            difficulty,
-            last_review,
-            state,
-            step,
-            interval,
-            lapses,
-            suspended,
-        })
-    }
-}
-
-#[derive(Clone)]
 pub struct Db {
-    pool: Pool<Sqlite>,
+    pool: SqlitePool,
 }
 
 impl Db {
-    pub async fn new() -> anyhow::Result<Self> {
-        let options = SqliteConnectOptions::from_str("sqlite://kana.db?mode=rwc")?
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal)
-            .log_statements(log::LevelFilter::Trace);
+    pub async fn new() -> Result<Self> {
+        let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:japanese_test.db".to_string());
 
-        let pool = SqlitePool::connect_with(options).await?;
+        // 1. 配置连接选项：如果文件不存在，自动创建
+        let options = SqliteConnectOptions::from_str(&database_url)?
+            .create_if_missing(true);
 
-        let db = Db { pool };
-        db.migrate().await?;
-        db.seed_database_if_empty().await?;
+        let pool = SqlitePoolOptions::new()
+            .connect_with(options)
+            .await?;
 
-        Ok(db)
+        // 2. 初始化表结构和数据
+        Self::initialize_db(&pool).await?;
+
+        Ok(Self { pool })
     }
 
-    async fn migrate(&self) -> anyhow::Result<()> {
+    // 初始化数据库：建表 + 灌入数据
+    async fn initialize_db(pool: &SqlitePool) -> Result<()> {
+        // 创建表
         sqlx::query(
             r#"
-            CREATE TABLE IF NOT EXISTS progress (
-                kana_char TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS cards (
+                id TEXT PRIMARY KEY,
+                kana_char TEXT NOT NULL,
                 romaji TEXT NOT NULL,
-                interval INTEGER DEFAULT 0,
-                easiness REAL DEFAULT 2.5,
-                repetitions INTEGER DEFAULT 0,
-                next_review_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-                stability REAL DEFAULT 86400.0,
-                difficulty REAL DEFAULT 5.0,
-                last_review DATETIME,
-                state INTEGER DEFAULT 0,
-                step INTEGER DEFAULT 0,
-                lapses INTEGER DEFAULT 0,
-                suspended BOOLEAN DEFAULT 0
+                stability REAL DEFAULT 0.0,
+                difficulty REAL DEFAULT 0.0,
+                last_review TEXT
             );
             "#
         )
-        .execute(&self.pool)
-        .await?;
-
-        // FSRS & State Machine & Leech Migration: Add columns if they don't exist
-        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN stability REAL DEFAULT 86400.0").execute(&self.pool).await;
-        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN difficulty REAL DEFAULT 5.0").execute(&self.pool).await;
-        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN last_review DATETIME").execute(&self.pool).await;
-        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN state INTEGER DEFAULT 0").execute(&self.pool).await;
-        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN step INTEGER DEFAULT 0").execute(&self.pool).await;
-        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN lapses INTEGER DEFAULT 0").execute(&self.pool).await;
-        let _ = sqlx::query("ALTER TABLE progress ADD COLUMN suspended BOOLEAN DEFAULT 0").execute(&self.pool).await;
-
-        Ok(())
-    }
-
-    async fn seed_database_if_empty(&self) -> anyhow::Result<()> {
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM progress")
-            .fetch_one(&self.pool)
+            .execute(pool)
             .await?;
 
-        if count == 0 {
+        // 检查是否为空，如果为空则插入数据
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM cards")
+            .fetch_one(pool)
+            .await?;
+
+        if count.0 == 0 {
+            println!("Initializing database with seed data...");
             let all_kana = get_all_kana();
+            let mut tx = pool.begin().await?;
+
             for (kana, romaji) in all_kana {
-                sqlx::query("INSERT OR IGNORE INTO progress (kana_char, romaji) VALUES (?, ?)")
+                let id = uuid::Uuid::new_v4().to_string();
+                sqlx::query("INSERT INTO cards (id, kana_char, romaji, stability, difficulty) VALUES (?, ?, ?, ?, ?)")
+                    .bind(id)
                     .bind(kana)
                     .bind(romaji)
-                    .execute(&self.pool)
+                    .bind(0.0) // 初始 stability
+                    .bind(0.0) // 初始 difficulty
+                    .execute(&mut *tx)
                     .await?;
             }
+            tx.commit().await?;
+            println!("Database initialized with {} cards.", count.0);
         }
+
         Ok(())
     }
 
-    pub async fn get_next_batch(&self, exclude_ids: &[String]) -> anyhow::Result<Vec<Card>> {
-        // 1. Fetch: SELECT * FROM progress WHERE suspended = 0.
-        let all_cards = sqlx::query_as::<_, Card>(
-            r#"SELECT * FROM progress WHERE suspended = 0"#
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        // 2. Filter: Exclude any card present in exclude_ids.
-        let mut candidates: Vec<Card> = all_cards
-            .into_iter()
-            .filter(|c| !exclude_ids.contains(&c.id))
-            .collect();
-
-        // 3. Shuffle: Perform Fisher-Yates shuffle on the remaining candidates.
-        let mut rng = rand::thread_rng();
-        candidates.shuffle(&mut rng);
-
-        // 4. Select: Take the first 20 cards.
-        let take_count = 20.min(candidates.len());
-        let batch: Vec<Card> = candidates.into_iter().take(take_count).collect();
-
-        // 5. Return: The randomized batch.
-        Ok(batch)
-    }
-
-    pub async fn get_specific_batch(&self, target_ids: &[String]) -> anyhow::Result<Vec<Card>> {
-        // 1. Fetch all cards
-        let all_cards = sqlx::query_as::<_, Card>(
-            r#"SELECT * FROM progress"#
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        // 2. Filter: Keep only cards where target_ids.contains(&card.id)
-        let mut batch: Vec<Card> = all_cards
-            .into_iter()
-            .filter(|c| target_ids.contains(&c.id))
-            .collect();
-
-        // 3. Shuffle
-        let mut rng = rand::thread_rng();
-        batch.shuffle(&mut rng);
-
-        Ok(batch)
-    }
-
-    pub async fn update_card(&self, id: &str, correct: bool) -> anyhow::Result<i64> {
-        let mut tx = self.pool.begin().await?;
-
-        // Read current state
-        let card = sqlx::query_as::<_, Card>("SELECT * FROM progress WHERE kana_char = ?")
-            .bind(id)
-            .fetch_one(&mut *tx)
+    pub async fn get_count_due(&self) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM cards")
+            .fetch_one(&self.pool)
             .await?;
+        Ok(count.0)
+    }
 
-        let now = Utc::now();
-        let mut s = card.stability; // Seconds
-        let mut d = card.difficulty;
-        let mut state = card.state;
-        let mut step = card.step;
-        let mut interval = 0; // Will be set logic below
-        let mut lapses = card.lapses;
-        let suspended = card.suspended; // Keep suspended as is (though we are removing leech suspension)
+    pub async fn get_total_count(&self) -> Result<usize> {
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM cards")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(count.0 as usize)
+    }
 
-        if state == 0 || state == 1 {
-            // --- New (0) & Learning (1) ---
-            if correct {
-                if step == 0 {
-                    interval = 60; // 1 min
-                    state = 1;
-                    step = 1;
-                } else if step == 1 {
-                    interval = 600; // 10 min
-                    state = 1;
-                    step = 2;
-                } else {
-                    // Graduate
-                    state = 2; // Review
-                    step = 0;
-                    s = 86400.0; // 1 day stability
-                    interval = 86400; // 1 day
-                }
-            } else {
-                // Wrong: Reset
-                state = 1;
-                step = 0;
-                interval = 60; // 1 min
-            }
-        } else if state == 2 {
-            // --- Review (2) ---
-            if correct {
-                // FSRS Logic
-                // Update Stability: S_new = S * (1 + factor * difficulty_weight)
-                let mut growth_multiplier = 1.0 + (d * 0.2);
+    pub async fn get_all_ids(&self) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT id FROM cards")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
 
-                // --- Interval Factors (Early/Overdue) ---
-                if let Some(last_rev) = card.last_review {
-                    let actual_interval = (now - last_rev).num_seconds().max(1) as f64;
-                    let scheduled_interval = card.interval.max(1) as f64;
-                    let delay_factor = actual_interval / scheduled_interval;
+    pub async fn get_batch_by_ids(&self, ids: &[String]) -> Result<Vec<Card>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
 
-                    if delay_factor > 1.0 {
-                        // Bonus for Overdue: 1.0 + 0.5 * log(delay_factor)
-                        growth_multiplier *= 1.0 + 0.5 * delay_factor.ln();
-                    } else {
-                        // Dampener for Early Review
-                        // Linear interpolation: delay 0 => growth 1.0; delay 1 => full growth
-                        growth_multiplier = 1.0 + (growth_multiplier - 1.0) * delay_factor;
-                    }
-                }
+        let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+        let query = format!("SELECT * FROM cards WHERE id IN ({})", placeholders.join(","));
 
-                s = s * growth_multiplier;
+        let mut query_builder = sqlx::query_as::<_, Card>(&query);
+        for id in ids {
+            query_builder = query_builder.bind(id);
+        }
 
-                // Update Difficulty
-                d = d - 0.2;
+        let cards = query_builder.fetch_all(&self.pool).await?;
 
-                // --- Target Retention Tuning (85%) ---
-                // New Interval = S * 1.6
-                let base_interval = s * 1.6;
-
-                // Fuzzing for State 2 (Long-term Review)
-                let mut rng = rand::thread_rng();
-                let fuzz_factor: f64 = rng.gen_range(0.95..1.05);
-                interval = (base_interval * fuzz_factor) as i64;
-
-            } else {
-                // Wrong (Lapse) -> Downgrade to Relearning
-                lapses += 1;
-
-                state = 3; // Relearning
-                step = 0;
-                interval = 600; // 10 min
-
-                // Slash Stability
-                s = s * 0.5;
-
-                // Update Difficulty (Harder)
-                d = d + 0.5;
-            }
-        } else if state == 3 {
-            // --- Relearning (3) ---
-            if correct {
-                // Re-Graduate
-                state = 2; // Back to Review
-                // For re-graduation, we can also apply the 85% retention factor if we trust S is accurate now
-                // Current S is the slashed stability.
-                // Let's use S * 1.6 to be consistent with 85% retention target for Review state.
-                interval = (s * 1.6) as i64;
-            } else {
-                // Wrong: Reset Relearning step
-                interval = 600; // 10 min
+        // 按输入 ID 的顺序排序
+        let mut ordered_cards = Vec::new();
+        for id in ids {
+            if let Some(card) = cards.iter().find(|c| c.id == *id) {
+                ordered_cards.push(card.clone());
             }
         }
 
-        // Clamp D
-        if d < 1.0 { d = 1.0; }
-        if d > 10.0 { d = 10.0; }
+        Ok(ordered_cards)
+    }
 
-        // Ensure min interval 60s
-        if interval < 60 { interval = 60; }
+    #[allow(unused)]
+    pub async fn get_specific_batch(&self, ids: &[String]) -> Result<Vec<Card>> {
+        self.get_batch_by_ids(ids).await
+    }
+    #[allow(unused)]
+    pub async fn get_next_batch(&self, _seen_ids: &[String]) -> Result<Vec<Card>> {
+        Ok(Vec::new())
+    }
 
-        sqlx::query(
-            "UPDATE progress SET stability = ?, difficulty = ?, last_review = ?, state = ?, step = ?, interval = ?, lapses = ?, suspended = ? WHERE kana_char = ?"
-        )
-        .bind(s)
-        .bind(d)
-        .bind(now)
-        .bind(state)
-        .bind(step)
-        .bind(interval)
-        .bind(lapses)
-        .bind(suspended)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    pub async fn update_card(&self, id: &str, correct: bool) -> Result<i64> {
+        let mut tx = self.pool.begin().await?;
+
+        let card_res: Option<Card> = sqlx::query_as("SELECT * FROM cards WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+        if let Some(card) = card_res {
+            let new_stability = if correct { card.stability * 1.5 } else { card.stability * 0.8 };
+            let new_difficulty = if correct { card.difficulty - 0.1 } else { card.difficulty + 0.2 };
+
+            sqlx::query("UPDATE cards SET stability = ?, difficulty = ?, last_review = CURRENT_TIMESTAMP WHERE id = ?")
+                .bind(new_stability)
+                .bind(new_difficulty)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
 
         tx.commit().await?;
-
-        Ok(interval)
-    }
-
-    pub async fn get_count_due(&self) -> anyhow::Result<i64> {
-         let count: i64 = sqlx::query_scalar(
-            r#"
-            SELECT count(*) FROM progress
-            WHERE
-                (state IN (1, 2, 3) AND (strftime('%s', 'now') - strftime('%s', last_review)) >= interval)
-                OR (state = 0)
-            "#
-         )
-            .fetch_one(&self.pool)
-            .await?;
-         Ok(count)
-    }
-
-    pub async fn get_total_count(&self) -> anyhow::Result<usize> {
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM progress")
-            .fetch_one(&self.pool)
-            .await?;
-        Ok(count as usize)
+        Ok(0)
     }
 }

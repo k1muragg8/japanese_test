@@ -20,6 +20,7 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["fs", "cors"] }
 dotenvy = "0.15.7"
 env_logger = "0.11.8"
+uuid = { version = "1.10", features = ["v4", "fast-rng", "macro-diagnostics"] }
 
 # 添加到 Cargo.toml 文件末尾
 

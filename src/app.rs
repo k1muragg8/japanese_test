@@ -1,6 +1,8 @@
 use std::time::Instant;
 use crate::db::{Db, Card};
 use std::sync::Arc;
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum AppState {
@@ -21,14 +23,11 @@ pub struct App {
     pub session_start: Instant,
 
     // Cycle Fields
-    pub cycle_seen_ids: Vec<String>,
+    pub deck_queue: Vec<String>,
     pub cycle_mistakes: std::collections::HashSet<String>,
     pub batch_counter: usize,
     pub total_cards_count: usize,
-
-    // 新增：预估总轮数 (用于 UI 显示，例如 11)
     pub estimated_total_batches: usize,
-    // 新增：明确的状态标记，不再只靠 batch_counter 猜
     pub is_review_phase: bool,
 }
 
@@ -38,7 +37,6 @@ impl App {
         let due_count = db.get_count_due().await?;
         let total_cards_count = db.get_total_count().await?;
 
-        // 计算预估轮次：例如 208 / 20 = 10.4 -> 11 轮
         let batch_size = 20.0;
         let estimated_total_batches = if total_cards_count > 0 {
             (total_cards_count as f64 / batch_size).ceil() as usize
@@ -56,7 +54,7 @@ impl App {
             feedback_detail: String::new(),
             due_count,
             session_start: Instant::now(),
-            cycle_seen_ids: Vec::new(),
+            deck_queue: Vec::new(),
             cycle_mistakes: std::collections::HashSet::new(),
             batch_counter: 0,
             total_cards_count,
@@ -66,41 +64,44 @@ impl App {
     }
 
     pub async fn start_quiz(&mut self) {
-        // 重置循环状态
-        self.cycle_seen_ids.clear();
         self.cycle_mistakes.clear();
         self.batch_counter = 1;
         self.is_review_phase = false;
 
-        if let Ok(cards) = self.db.get_next_batch(&self.cycle_seen_ids).await {
-            self.due_cards = cards;
+        if let Ok(mut all_ids) = self.db.get_all_ids().await {
+            // 【关键修复】使用独立代码块，确保 rng 在 await 前被销毁
+            {
+                let mut rng = thread_rng();
+                all_ids.shuffle(&mut rng);
+            }
+            // 出了这个花括号，rng 已经死透了，下面的 await 就是安全的
 
-            let ids: Vec<String> = self.due_cards.iter().map(|c| c.id.clone()).collect();
-            self.cycle_seen_ids.extend(ids);
+            self.deck_queue = all_ids;
+            self.load_next_queue_batch().await;
+        }
+    }
 
-            self.current_card_index = 0;
-            self.user_input.clear();
-            self.current_feedback = None;
-            self.feedback_detail.clear();
+    async fn load_next_queue_batch(&mut self) {
+        let batch_size = 20;
+        let drain_count = std::cmp::min(batch_size, self.deck_queue.len());
 
-            if !self.due_cards.is_empty() {
+        let batch_ids: Vec<String> = self.deck_queue.drain(0..drain_count).collect();
+
+        if !batch_ids.is_empty() {
+            if let Ok(cards) = self.db.get_batch_by_ids(&batch_ids).await {
+                self.due_cards = cards;
+                self.current_card_index = 0;
                 self.state = AppState::Quiz;
-            } else {
-                self.state = AppState::Dashboard;
             }
         }
     }
 
-    #[allow(unused)]
-    pub async fn submit_answer(&mut self) {
-        // App::submit_answer 主要用于 TUI 或本地逻辑
-        // API 模式下主要逻辑在 api.rs 中处理，但这里保留以防万一
-        if self.current_card_index >= self.due_cards.len() {
-            return;
+    async fn load_review_batch(&mut self) {
+        let mistakes: Vec<String> = self.cycle_mistakes.iter().cloned().collect();
+        if let Ok(cards) = self.db.get_batch_by_ids(&mistakes).await {
+            self.due_cards = cards;
+            self.current_card_index = 0;
         }
-
-        let card = &self.due_cards[self.current_card_index];
-        // 这里的逻辑主要被 API 端复用或替代
     }
 
     #[allow(unused)]
@@ -110,74 +111,36 @@ impl App {
         self.current_feedback = None;
         self.feedback_detail.clear();
 
-        // 检查当前批次是否做完
         if self.current_card_index >= self.due_cards.len() {
 
-            // --- 核心逻辑修复：基于库存判断流转 ---
-
-            // 1. 如果还在【新卡学习阶段】 (还没进入复习模式)
+            // 1. 新卡阶段
             if !self.is_review_phase {
-                // 检查牌库里是否还有没见过的卡
-                let total_seen = self.cycle_seen_ids.len();
-                let has_unseen_cards = total_seen < self.total_cards_count;
-
-                if has_unseen_cards {
-                    // 【分支 A】还有生词：继续推下一组 (可能是第 10 轮，也可能是第 11 轮)
+                if !self.deck_queue.is_empty() {
                     self.batch_counter += 1;
-                    if let Ok(cards) = self.db.get_next_batch(&self.cycle_seen_ids).await {
-                        // 只有当真的取到卡片时才更新
-                        if !cards.is_empty() {
-                            self.due_cards = cards;
-                            let ids: Vec<String> = self.due_cards.iter().map(|c| c.id.clone()).collect();
-                            self.cycle_seen_ids.extend(ids);
-                            self.current_card_index = 0;
-                            return;
-                        }
-                    }
-                    // 如果代码走到这，说明数据库虽然理论上有卡但没取出来，防止死循环，进入复习
+                    self.load_next_queue_batch().await;
+                    return;
                 }
 
-                // 【分支 B】生词全看完了 (total_seen >= total_cards_count)
-                // 此时准备进入复习模式
                 if self.cycle_mistakes.is_empty() {
-                    // 完美通关，没得复习 -> 直接开启下一轮大循环
                     self.start_quiz().await;
                 } else {
-                    // 进入复习模式
                     self.is_review_phase = true;
-                    // 为了视觉上的区分，batch 计数器继续增加，表示“下一关”
                     self.batch_counter += 1;
                     self.load_review_batch().await;
                 }
-                self.current_card_index = 0;
                 return;
             }
 
-            // 2. 如果已经在【复习阶段】 (Review Phase)
+            // 2. 复习阶段
             if self.is_review_phase {
                 if self.cycle_mistakes.is_empty() {
-                    // 债还完了 -> 重置大循环
                     self.start_quiz().await;
                 } else {
-                    // 还没还完 -> 无限惩罚轮
                     self.batch_counter += 1;
                     self.load_review_batch().await;
                 }
-                self.current_card_index = 0;
                 return;
             }
         }
-    }
-
-    async fn load_review_batch(&mut self) {
-        let mistakes: Vec<String> = self.cycle_mistakes.iter().cloned().collect();
-        if let Ok(cards) = self.db.get_specific_batch(&mistakes).await {
-            self.due_cards = cards;
-        }
-    }
-
-    #[allow(unused)]
-    pub fn handle_input_char(&mut self, c: char) {
-        self.user_input.push(c);
     }
 }

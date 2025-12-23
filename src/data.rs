@@ -231,6 +231,7 @@ pub const KANA_DATA: &[KanaPair] = &[
     KanaPair { kana: "ピョ", romaji: "pyo" },
 ];
 
+// 必须添加这个函数，否则 db.rs 无法调用
 pub fn get_all_kana() -> Vec<(&'static str, &'static str)> {
     KANA_DATA.iter().map(|k| (k.kana, k.romaji)).collect()
 }
