@@ -54,11 +54,9 @@ fn Quiz() -> impl IntoView {
     let (loading, set_loading) = create_signal(true);
     let (font_size, set_font_size) = create_signal(3.0);
 
-    // 状态信号
     let (batch_current, set_batch_current) = create_signal(1);
     let (server_remaining_cards, set_server_remaining_cards) = create_signal(0);
     let (is_review_mode, set_is_review_mode) = create_signal(false);
-    #[allow(unused)]
     let (mistakes_count, set_mistakes_count) = create_signal(0);
 
     let current_batch_display = move || {
@@ -68,6 +66,7 @@ fn Quiz() -> impl IntoView {
     let is_submitted = create_memo(move |_| feedback.get().is_some());
     let input_ref = create_node_ref::<Input>();
 
+    // --- 核心逻辑修改 1: fetch_next_batch 全权负责“新回合”的初始化 ---
     let fetch_next_batch = move || {
         set_loading.set(true);
         spawn_local(async move {
@@ -75,19 +74,21 @@ fn Quiz() -> impl IntoView {
 
             if let Ok(resp) = resp_res {
                 if let Ok(batch_data) = resp.json::<BatchResponse>().await {
-                    // 1. 关键修复：使用 batch 打包所有更新
-                    // 确保数据变了的同时，索引也变了，界面只会重绘一次
+                    // 只有数据真正回来了，才重置所有状态
                     batch(move || {
                         set_cards.set(batch_data.cards);
                         set_batch_current.set(batch_data.batch_current);
                         set_server_remaining_cards.set(batch_data.remaining_in_deck);
                         set_is_review_mode.set(batch_data.is_review);
                         set_mistakes_count.set(batch_data.cycle_mistakes_count);
+
+                        // 这里是关键：新卡来了，才把上一局的“结果”和“输入”清空
+                        set_feedback.set(None);
+                        set_user_input.set(String::new());
                         set_current_index.set(0);
                     });
                 }
             }
-            // 确保数据更新完了，才取消 Loading
             set_loading.set(false);
         });
     };
@@ -111,7 +112,6 @@ fn Quiz() -> impl IntoView {
 
     let submit_answer = move || {
         let current_cards = cards.get();
-        // 防止索引越界
         if current_index.get() >= current_cards.len() { return; }
 
         let card = &current_cards[current_index.get()];
@@ -124,14 +124,15 @@ fn Quiz() -> impl IntoView {
             set_mistakes_count.update(|c| if *c > 0 { *c -= 1 });
         }
 
-        set_loading.set(true);
+        // 提交时不全屏 loading，只锁输入框，体验更好
+        // set_loading.set(true);
 
         spawn_local(async move {
             let _ = Request::post("/api/submit")
                 .json(&SubmitRequest { card_id, correct: is_correct })
                 .unwrap().send().await;
 
-            set_loading.set(false);
+            // set_loading.set(false);
 
             if is_correct {
                 set_feedback.set(Some((true, "Correct!".to_string())));
@@ -141,24 +142,36 @@ fn Quiz() -> impl IntoView {
         });
     };
 
+    // --- 核心逻辑修改 2: next_card 别急着清空 ---
     let next_card = move || {
-        set_feedback.set(None);
-        set_user_input.set(String::new());
         let next_idx = current_index.get() + 1;
 
+        // 检查：是不是该去拿新卡了？
         if next_idx >= cards.get().len() {
+            // 如果要去拿新卡，【什么状态都不要动】
+            // 保持当前的 Feedback 显示，直接叫 Loading
+            // 所有的重置工作交给 fetch_next_batch 的回调去处理
             fetch_next_batch();
-            // 注意：这里不要 set_current_index(0)，交给 fetch_next_batch 的 batch 去做
         } else {
-            set_current_index.set(next_idx);
+            // 只有确认是本地切换，才手动清空状态
+            batch(move || {
+                set_feedback.set(None);
+                set_user_input.set(String::new());
+                set_current_index.set(next_idx);
+            });
         }
     };
 
     let handle_global_enter = window_event_listener(ev::keydown, move |ev| {
         if ev.key() == "Enter" {
             ev.prevent_default();
-            if is_submitted.get() { next_card(); }
-            else if !loading.get() { submit_answer(); }
+            if loading.get() { return; } // Loading 时禁止操作
+
+            if is_submitted.get() {
+                next_card();
+            } else {
+                submit_answer();
+            }
         }
     });
     on_cleanup(move || handle_global_enter.remove());
@@ -168,7 +181,6 @@ fn Quiz() -> impl IntoView {
             {move || {
                 let _current = batch_current.get();
                 let is_review = is_review_mode.get();
-
                 let local_remaining = cards.get().len().saturating_sub(current_index.get());
 
                 let remaining_display = if is_review {
@@ -200,14 +212,15 @@ fn Quiz() -> impl IntoView {
             }}
 
             {move || {
-                // 2. 关键修复：严格的 Loading 遮罩
-                // 只要 loading 为 true，强制显示 Loading 界面，彻底杜绝看到旧卡片
+                // 如果正在加载新 Batch (Loading且没卡，或者正在Fetch)
+                // 这里做一个覆盖层，防止看到旧卡
                 if loading.get() {
                     view! { <div class="card"><div class="kana-display" style="font-size: 2rem;">"Loading..."</div></div> }.into_view()
                 } else {
                     let current_cards = cards.get();
                     if let Some(card) = current_cards.get(current_index.get()) {
                         let is_sub = is_submitted.get();
+                        // 提交后或者 loading 时，输入框只读
                         let is_readonly = is_sub || loading.get();
 
                         view! {
