@@ -75,14 +75,19 @@ fn Quiz() -> impl IntoView {
 
             if let Ok(resp) = resp_res {
                 if let Ok(batch_data) = resp.json::<BatchResponse>().await {
-                    set_cards.set(batch_data.cards);
-                    set_batch_current.set(batch_data.batch_current);
-                    set_server_remaining_cards.set(batch_data.remaining_in_deck);
-                    set_is_review_mode.set(batch_data.is_review);
-                    set_mistakes_count.set(batch_data.cycle_mistakes_count);
-                    set_current_index.set(0);
+                    // 1. 关键修复：使用 batch 打包所有更新
+                    // 确保数据变了的同时，索引也变了，界面只会重绘一次
+                    batch(move || {
+                        set_cards.set(batch_data.cards);
+                        set_batch_current.set(batch_data.batch_current);
+                        set_server_remaining_cards.set(batch_data.remaining_in_deck);
+                        set_is_review_mode.set(batch_data.is_review);
+                        set_mistakes_count.set(batch_data.cycle_mistakes_count);
+                        set_current_index.set(0);
+                    });
                 }
             }
+            // 确保数据更新完了，才取消 Loading
             set_loading.set(false);
         });
     };
@@ -106,6 +111,7 @@ fn Quiz() -> impl IntoView {
 
     let submit_answer = move || {
         let current_cards = cards.get();
+        // 防止索引越界
         if current_index.get() >= current_cards.len() { return; }
 
         let card = &current_cards[current_index.get()];
@@ -139,8 +145,10 @@ fn Quiz() -> impl IntoView {
         set_feedback.set(None);
         set_user_input.set(String::new());
         let next_idx = current_index.get() + 1;
+
         if next_idx >= cards.get().len() {
             fetch_next_batch();
+            // 注意：这里不要 set_current_index(0)，交给 fetch_next_batch 的 batch 去做
         } else {
             set_current_index.set(next_idx);
         }
@@ -174,10 +182,7 @@ fn Quiz() -> impl IntoView {
 
                 view! {
                     <div class="status-header">
-                        // 1. 左侧：Batch
                         <span class="cycle-badge" style=badge_style>{current_batch_display()}</span>
-
-                        // 2. 中间：Feedback (插入到这里)
                         {move || match feedback.get() {
                             None => view! { <span></span> }.into_view(),
                             Some((is_correct, msg)) => {
@@ -189,15 +194,15 @@ fn Quiz() -> impl IntoView {
                                 }.into_view()
                             }
                         }}
-
-                        // 3. 右侧：Cards
                         <span>{remaining_display}</span>
                     </div>
                 }
             }}
 
             {move || {
-                if loading.get() && cards.get().is_empty() {
+                // 2. 关键修复：严格的 Loading 遮罩
+                // 只要 loading 为 true，强制显示 Loading 界面，彻底杜绝看到旧卡片
+                if loading.get() {
                     view! { <div class="card"><div class="kana-display" style="font-size: 2rem;">"Loading..."</div></div> }.into_view()
                 } else {
                     let current_cards = cards.get();
@@ -223,7 +228,6 @@ fn Quiz() -> impl IntoView {
                                             style="width: 100px; cursor: pointer;" />
                                         <span style="font-size: 14px;">"A"</span>
                                     </div>
-                                    // 这里原本的 Feedback 块已经被移除了
                                 </div>
                             </div>
                         }.into_view()
