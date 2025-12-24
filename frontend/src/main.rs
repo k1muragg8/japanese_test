@@ -57,6 +57,7 @@ fn Quiz() -> impl IntoView {
     let (batch_current, set_batch_current) = create_signal(1);
     let (server_remaining_cards, set_server_remaining_cards) = create_signal(0);
     let (is_review_mode, set_is_review_mode) = create_signal(false);
+    #[allow(unused)]
     let (mistakes_count, set_mistakes_count) = create_signal(0);
 
     let current_batch_display = move || {
@@ -66,7 +67,7 @@ fn Quiz() -> impl IntoView {
     let is_submitted = create_memo(move |_| feedback.get().is_some());
     let input_ref = create_node_ref::<Input>();
 
-    // --- 核心逻辑修改 1: fetch_next_batch 全权负责“新回合”的初始化 ---
+    // 获取下一批数据
     let fetch_next_batch = move || {
         set_loading.set(true);
         spawn_local(async move {
@@ -74,7 +75,7 @@ fn Quiz() -> impl IntoView {
 
             if let Ok(resp) = resp_res {
                 if let Ok(batch_data) = resp.json::<BatchResponse>().await {
-                    // 只有数据真正回来了，才重置所有状态
+                    // 使用 batch 确保原子更新，避免闪烁
                     batch(move || {
                         set_cards.set(batch_data.cards);
                         set_batch_current.set(batch_data.batch_current);
@@ -82,28 +83,40 @@ fn Quiz() -> impl IntoView {
                         set_is_review_mode.set(batch_data.is_review);
                         set_mistakes_count.set(batch_data.cycle_mistakes_count);
 
-                        // 这里是关键：新卡来了，才把上一局的“结果”和“输入”清空
+                        // 重置状态
                         set_feedback.set(None);
                         set_user_input.set(String::new());
                         set_current_index.set(0);
+
+                        // 【关键】数据更新完毕后，直接在这里关闭 loading
+                        // 这样“新卡显示”和“遮罩消失”是同时发生的，视觉最丝滑
+                        set_loading.set(false);
                     });
+                    return;
                 }
             }
+            // 如果出错，也要关闭 loading
             set_loading.set(false);
         });
     };
 
     create_effect(move |_| { fetch_next_batch(); });
 
+    // 自动聚焦逻辑
     create_effect(move |_| {
         let _ = loading.get();
         let _ = current_index.get();
         let _ = feedback.get();
-        if let Some(input) = input_ref.get() { let _ = input.focus(); }
+        if let Some(input) = input_ref.get() {
+            // 只有当不处于 loading 状态时才强制聚焦，避免键盘跳出跳回
+            if !loading.get() {
+                let _ = input.focus();
+            }
+        }
     });
 
     create_effect(move |_| {
-        if !is_submitted.get() {
+        if !is_submitted.get() && !loading.get() {
             set_timeout(move || {
                 if let Some(input) = input_ref.get() { let _ = input.focus(); }
             }, std::time::Duration::from_millis(10));
@@ -124,15 +137,10 @@ fn Quiz() -> impl IntoView {
             set_mistakes_count.update(|c| if *c > 0 { *c -= 1 });
         }
 
-        // 提交时不全屏 loading，只锁输入框，体验更好
-        // set_loading.set(true);
-
         spawn_local(async move {
             let _ = Request::post("/api/submit")
                 .json(&SubmitRequest { card_id, correct: is_correct })
                 .unwrap().send().await;
-
-            // set_loading.set(false);
 
             if is_correct {
                 set_feedback.set(Some((true, "Correct!".to_string())));
@@ -142,18 +150,13 @@ fn Quiz() -> impl IntoView {
         });
     };
 
-    // --- 核心逻辑修改 2: next_card 别急着清空 ---
     let next_card = move || {
         let next_idx = current_index.get() + 1;
 
-        // 检查：是不是该去拿新卡了？
         if next_idx >= cards.get().len() {
-            // 如果要去拿新卡，【什么状态都不要动】
-            // 保持当前的 Feedback 显示，直接叫 Loading
-            // 所有的重置工作交给 fetch_next_batch 的回调去处理
+            // 到底了，去取新数据。保持当前界面不动，只显示 Loading 遮罩
             fetch_next_batch();
         } else {
-            // 只有确认是本地切换，才手动清空状态
             batch(move || {
                 set_feedback.set(None);
                 set_user_input.set(String::new());
@@ -165,7 +168,7 @@ fn Quiz() -> impl IntoView {
     let handle_global_enter = window_event_listener(ev::keydown, move |ev| {
         if ev.key() == "Enter" {
             ev.prevent_default();
-            if loading.get() { return; } // Loading 时禁止操作
+            if loading.get() { return; }
 
             if is_submitted.get() {
                 next_card();
@@ -190,7 +193,7 @@ fn Quiz() -> impl IntoView {
                     format!("{} Cards", val)
                 };
 
-                let badge_style = if is_review { "background-color: #ed4956; color: white;" } else { "" };
+                let badge_style = "";
 
                 view! {
                     <div class="status-header">
@@ -211,25 +214,55 @@ fn Quiz() -> impl IntoView {
                 }
             }}
 
-            {move || {
-                // 如果正在加载新 Batch (Loading且没卡，或者正在Fetch)
-                // 这里做一个覆盖层，防止看到旧卡
-                if loading.get() {
-                    view! { <div class="card"><div class="kana-display" style="font-size: 2rem;">"Loading..."</div></div> }.into_view()
+            // 【UI 结构优化】
+            // 不再使用 if loading 替换整个 div，而是保持 div.card 结构稳定
+            <div class="card" style="position: relative; min-height: 200px;">
+
+                // 1. Loading 遮罩层 (绝对定位，盖在卡片上面)
+                {move || if loading.get() {
+                    view! {
+                        <div style="
+                            position: absolute;
+                            top: 0; left: 0; right: 0; bottom: 0;
+                            background: rgba(255, 255, 255, 0.9);
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                            z-index: 10;
+                            border-radius: 8px;
+                            font-size: 1.5rem;
+                            color: #666;
+                        ">
+                            "Loading..."
+                        </div>
+                    }.into_view()
                 } else {
+                    view! { <span style="display: none"></span> }.into_view()
+                }}
+
+                // 2. 卡片内容层 (始终渲染，但在 loading 时会被上面的遮罩挡住)
+                {move || {
                     let current_cards = cards.get();
-                    if let Some(card) = current_cards.get(current_index.get()) {
+                    // 安全检查：如果数据还没回来（空数组），显示空占位
+                    if current_cards.is_empty() {
+                         view! { <div style="height: 150px;"></div> }.into_view()
+                    } else {
+                        // 如果有数据，显示当前卡片（即使是旧的，也被遮罩挡住了，用户看不见）
+                        // 使用 unwrap_or 保证安全
+                        let card = current_cards.get(current_index.get()).cloned().unwrap_or_else(|| current_cards[0].clone());
                         let is_sub = is_submitted.get();
-                        // 提交后或者 loading 时，输入框只读
                         let is_readonly = is_sub || loading.get();
 
                         view! {
-                            <div class="card">
+                            <div>
                                 <div class="kana-display" style=move || format!("font-size: {}rem", font_size.get())>
-                                    {card.kana_char.clone()}
+                                    {card.kana_char}
                                 </div>
                                 <div style="width: 100%;">
-                                    <input type="text" placeholder="Type Romaji..." prop:value=user_input prop:readonly=is_readonly node_ref=input_ref
+                                    <input type="text" placeholder="Type Romaji..."
+                                        prop:value=user_input
+                                        prop:readonly=is_readonly
+                                        node_ref=input_ref
                                         on:input=move |ev| set_user_input.set(event_target_value(&ev)) />
 
                                     <div style="margin-top: 20px; display: flex; align-items: center; justify-content: center; gap: 10px; opacity: 0.3; transition: opacity 0.3s;"
@@ -244,11 +277,9 @@ fn Quiz() -> impl IntoView {
                                 </div>
                             </div>
                         }.into_view()
-                    } else {
-                         view! { <div class="card"><div class="kana-display" style="font-size: 2rem;">"Syncing..."</div></div> }.into_view()
                     }
-                }
-            }}
+                }}
+            </div>
         </div>
     }
 }
