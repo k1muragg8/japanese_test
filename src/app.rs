@@ -141,6 +141,7 @@ impl App {
         }
     }
 
+    #[allow(unused)]
     async fn load_review_batch(&mut self) {
         let mistakes: Vec<String> = self.cycle_mistakes.iter().cloned().collect();
         if let Ok(cards) = self.db.get_batch_by_ids(&mistakes).await {
@@ -156,35 +157,18 @@ impl App {
         self.current_feedback = None;
         self.feedback_detail.clear();
 
+        // 检查当前批次是否做完
         if self.current_card_index >= self.due_cards.len() {
 
-            // 1. 新卡阶段
-            if !self.is_review_phase {
-                if !self.deck_queue.is_empty() {
-                    self.batch_counter += 1;
-                    self.load_next_queue_batch().await;
-                    return;
-                }
-
-                if self.cycle_mistakes.is_empty() {
-                    self.start_quiz().await;
-                } else {
-                    self.is_review_phase = true;
-                    self.batch_counter += 1;
-                    self.load_review_batch().await;
-                }
-                return;
-            }
-
-            // 2. 复习阶段
-            if self.is_review_phase {
-                if self.cycle_mistakes.is_empty() {
-                    self.start_quiz().await;
-                } else {
-                    self.batch_counter += 1;
-                    self.load_review_batch().await;
-                }
-                return;
+            // 逻辑简化：不再进入复习模式
+            // 1. 如果队列里还有牌，继续发下一批“缝合怪”
+            if !self.deck_queue.is_empty() {
+                self.batch_counter += 1;
+                self.load_next_queue_batch().await;
+            } else {
+                // 2. 队列空了，直接重新洗牌，开始新的一轮
+                // (错题本 cycle_mistakes 虽然在 api.rs 里还在记录，但我们这里直接无视它)
+                self.start_quiz().await;
             }
         }
     }

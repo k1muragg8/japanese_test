@@ -1,4 +1,5 @@
 use leptos::*;
+use leptos::logging::error;
 use serde::{Deserialize, Serialize};
 use gloo_net::http::Request;
 use leptos::html::Input;
@@ -73,30 +74,39 @@ fn Quiz() -> impl IntoView {
         spawn_local(async move {
             let resp_res = Request::get("/api/next_batch").send().await;
 
-            if let Ok(resp) = resp_res {
-                if let Ok(batch_data) = resp.json::<BatchResponse>().await {
-                    // 使用 batch 确保原子更新，避免闪烁
-                    batch(move || {
-                        set_cards.set(batch_data.cards);
-                        set_batch_current.set(batch_data.batch_current);
-                        set_server_remaining_cards.set(batch_data.remaining_in_deck);
-                        set_is_review_mode.set(batch_data.is_review);
-                        set_mistakes_count.set(batch_data.cycle_mistakes_count);
+            match resp_res {
+                Ok(resp) => {
+                    if let Ok(batch_data) = resp.json::<BatchResponse>().await {
+                        // 成功获取数据：原子更新所有状态
+                        batch(move || {
+                            set_cards.set(batch_data.cards);
+                            set_batch_current.set(batch_data.batch_current);
+                            set_server_remaining_cards.set(batch_data.remaining_in_deck);
+                            set_is_review_mode.set(batch_data.is_review);
+                            set_mistakes_count.set(batch_data.cycle_mistakes_count);
 
-                        // 重置状态
-                        set_feedback.set(None);
-                        set_user_input.set(String::new());
-                        set_current_index.set(0);
+                            // 重置输入和反馈
+                            set_feedback.set(None);
+                            set_user_input.set(String::new());
+                            set_current_index.set(0);
 
-                        // 【关键】数据更新完毕后，直接在这里关闭 loading
-                        // 这样“新卡显示”和“遮罩消失”是同时发生的，视觉最丝滑
-                        set_loading.set(false);
-                    });
-                    return;
+                            // 只有数据真的换了，才关闭 loading
+                            set_loading.set(false);
+                        });
+                    } else {
+                        // JSON 解析失败（虽然不太可能，但要防守）
+                        // 可以在这里加个 set_loading(false) 或者 alert("Error")
+                        // 但最好不要关闭 loading，让用户感觉“卡住了”比“看到旧卡”好排查
+                        error!("Failed to parse batch response");
+                    }
+                },
+                Err(e) => {
+                    // 网络请求失败
+                    error!("Network error: {:?}", e);
+                    // 这里也不要轻易 set_loading(false)，否则用户会看到旧卡片
+                    // 最好显示一个错误提示
                 }
             }
-            // 如果出错，也要关闭 loading
-            set_loading.set(false);
         });
     };
 
