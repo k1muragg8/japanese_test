@@ -34,8 +34,8 @@ async fn main() -> anyhow::Result<()> {
     let app = app_router(api_state)
         .fallback_service(ServeDir::new("frontend/dist")); // <--- 关键！找不到的路径都去 frontend 找
 
-    // let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    let addr = SocketAddr::from(([192, 168, 25, 76], 3000));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    // let addr = SocketAddr::from(([192, 168, 25, 76], 3000));
     println!("Listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
