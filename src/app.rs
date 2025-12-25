@@ -82,14 +82,59 @@ impl App {
     }
 
     async fn load_next_queue_batch(&mut self) {
-        let batch_size = 20;
-        let drain_count = std::cmp::min(batch_size, self.deck_queue.len());
+        // === 配置区域 ===
+        // 这里设置难度：1 = 单字, 2 = 双字组合, 3 = 三字组合...
+        const COMBO_SIZE: usize = 3;
+        const BATCH_SIZE: usize = 20; // 每轮做多少道题
+        // ================
 
+        // 1. 计算我们需要从队列里取多少个原始 ID
+        let ids_needed = BATCH_SIZE * COMBO_SIZE;
+        let drain_count = std::cmp::min(ids_needed, self.deck_queue.len());
+
+        // 2. 取出 ID 并去数据库查详情
         let batch_ids: Vec<String> = self.deck_queue.drain(0..drain_count).collect();
 
         if !batch_ids.is_empty() {
-            if let Ok(cards) = self.db.get_batch_by_ids(&batch_ids).await {
-                self.due_cards = cards;
+            if let Ok(raw_cards) = self.db.get_batch_by_ids(&batch_ids).await {
+
+                // 3. 开始“缝合”逻辑
+                let mut combo_cards = Vec::new();
+
+                // chunks: 将原始卡片按 COMBO_SIZE 分组
+                for chunk in raw_cards.chunks(COMBO_SIZE) {
+                    if chunk.is_empty() { continue; }
+
+                    // 拼接假名和罗马音
+                    let mut merged_kana = String::new();
+                    let mut merged_romaji = String::new();
+
+                    // 使用第一张卡的 ID 作为这个组合的“代表 ID”
+                    // (副作用：答错了只会降低第一张卡的评分，但这对于随机练习来说可以接受)
+                    let primary_id = chunk[0].id.clone();
+                    let primary_stability = chunk[0].stability;
+                    let primary_difficulty = chunk[0].difficulty;
+
+                    for card in chunk {
+                        merged_kana.push_str(&card.kana_char);
+                        merged_romaji.push_str(&card.romaji);
+                    }
+
+                    // 创建一个“虚拟卡片”
+                    let virtual_card = Card {
+                        id: primary_id,
+                        kana_char: merged_kana,
+                        romaji: merged_romaji,
+                        stability: primary_stability,
+                        difficulty: primary_difficulty,
+                        last_review: None,
+                    };
+
+                    combo_cards.push(virtual_card);
+                }
+
+                // 4. 将缝合好的卡片放入待办列表
+                self.due_cards = combo_cards;
                 self.current_card_index = 0;
                 self.state = AppState::Quiz;
             }
