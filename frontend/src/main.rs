@@ -5,7 +5,6 @@ use gloo_net::http::Request;
 use leptos::html::Input;
 use wasm_bindgen::JsCast;
 
-// ... (结构体定义保持不变)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Card {
     pub id: String,
@@ -24,6 +23,8 @@ pub struct BatchResponse {
     pub is_review: bool,
     pub cycle_mistakes_count: usize,
     pub cards: Vec<Card>,
+    // 【同步新增】接收服务端的进度索引
+    pub current_card_index: usize,
 }
 
 #[derive(Serialize)]
@@ -47,6 +48,32 @@ fn App() -> impl IntoView {
     }
 }
 
+// 智能标准化输入函数（保留）
+fn normalize_input(input: &str) -> String {
+    let mut s = input.trim().to_lowercase().replace(" ", "");
+    let replacements = [
+        ("tsu", "tsu"), ("tu", "tsu"),
+        ("shi", "shi"), ("si", "shi"),
+        ("chi", "chi"), ("ti", "chi"),
+        ("fu", "fu"),   ("hu", "fu"),
+        ("ji", "ji"),   ("zi", "ji"), ("di", "ji"),
+        ("zu", "zu"),   ("du", "zu"),
+        ("sha", "sha"), ("sya", "sha"),
+        ("shu", "shu"), ("syu", "shu"),
+        ("sho", "sho"), ("syo", "sho"),
+        ("cha", "cha"), ("tya", "cha"),
+        ("chu", "chu"), ("tyu", "chu"),
+        ("cho", "cho"), ("tyo", "cho"),
+        ("ja", "ja"),   ("zya", "ja"), ("jya", "ja"),
+        ("ju", "ju"),   ("zyu", "ju"), ("jyu", "ju"),
+        ("jo", "jo"),   ("zyo", "jo"), ("jyo", "jo"),
+    ];
+    for (target, replacement) in replacements.iter() {
+        if target != replacement { s = s.replace(target, replacement); }
+    }
+    s
+}
+
 #[component]
 fn Quiz() -> impl IntoView {
     let (cards, set_cards) = create_signal(Vec::<Card>::new());
@@ -55,7 +82,6 @@ fn Quiz() -> impl IntoView {
     let (feedback, set_feedback) = create_signal(Option::<(bool, String)>::None);
     let (loading, set_loading) = create_signal(true);
     let (font_size, set_font_size) = create_signal(3.0);
-    // 新增一个错误状态，用于显示重试按钮
     let (error_msg, set_error_msg) = create_signal(Option::<String>::None);
 
     let (batch_current, set_batch_current) = create_signal(1);
@@ -71,20 +97,17 @@ fn Quiz() -> impl IntoView {
     let is_submitted = create_memo(move |_| feedback.get().is_some());
     let input_ref = create_node_ref::<Input>();
 
-    // 获取下一批数据
     let fetch_next_batch = move || {
         set_loading.set(true);
-        set_error_msg.set(None); // 清除错误
+        set_error_msg.set(None);
 
         spawn_local(async move {
-            // 【关键修复 1】添加随机时间戳，防止浏览器缓存 GET 请求
             let url = format!("/api/next_batch?t={}", js_sys::Date::now());
             let resp_res = Request::get(&url).send().await;
 
             match resp_res {
                 Ok(resp) => {
                     if let Ok(batch_data) = resp.json::<BatchResponse>().await {
-                        // 成功获取数据
                         batch(move || {
                             set_cards.set(batch_data.cards);
                             set_batch_current.set(batch_data.batch_current);
@@ -94,14 +117,14 @@ fn Quiz() -> impl IntoView {
 
                             set_feedback.set(None);
                             set_user_input.set(String::new());
-                            set_current_index.set(0);
+
+                            // 【核心修复】使用服务端返回的真实进度，而不是无脑重置为 0
+                            set_current_index.set(batch_data.current_card_index);
 
                             set_loading.set(false);
                         });
                     } else {
                         error!("Failed to parse batch response");
-                        // 【关键修复 2】解析失败时，不要简单的关闭 loading，而是显示错误状态
-                        // 这样用户就看不到底下的旧卡片了
                         set_error_msg.set(Some("数据解析失败，请点击重试".to_string()));
                         set_loading.set(false);
                     }
@@ -142,7 +165,13 @@ fn Quiz() -> impl IntoView {
 
         let card = &current_cards[current_index.get()];
         let input_val = user_input.get();
-        let is_correct = input_val.trim().eq_ignore_ascii_case(&card.romaji);
+
+        // 标准化输入 + 移除空格
+        let normalized_user_input = normalize_input(&input_val);
+        let normalized_correct_romaji = normalize_input(&card.romaji);
+
+        let is_correct = normalized_user_input == normalized_correct_romaji;
+
         let card_id = card.id.clone();
         let romaji = card.romaji.clone();
 
@@ -180,7 +209,6 @@ fn Quiz() -> impl IntoView {
     let handle_global_enter = window_event_listener(ev::keydown, move |ev| {
         if ev.key() == "Enter" {
             ev.prevent_default();
-            // 如果有错误，回车键触发重试
             if error_msg.get().is_some() {
                 fetch_next_batch();
                 return;
@@ -232,22 +260,9 @@ fn Quiz() -> impl IntoView {
             }}
 
             <div class="card" style="position: relative; min-height: 200px;">
-
-                // 1. Loading 遮罩层 (最高优先级)
                 {move || if loading.get() {
                     view! {
-                        <div style="
-                            position: absolute;
-                            top: 0; left: 0; right: 0; bottom: 0;
-                            background: rgba(255, 255, 255, 0.95);
-                            display: flex;
-                            justify-content: center;
-                            align-items: center;
-                            z-index: 20;
-                            border-radius: 8px;
-                            font-size: 1.5rem;
-                            color: #666;
-                        ">
+                        <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255, 255, 255, 0.95); display: flex; justify-content: center; align-items: center; z-index: 20; border-radius: 8px; font-size: 1.5rem; color: #666;">
                             "Loading..."
                         </div>
                     }.into_view()
@@ -255,43 +270,27 @@ fn Quiz() -> impl IntoView {
                     view! { <span style="display: none"></span> }.into_view()
                 }}
 
-                // 2. Error 遮罩层 (次高优先级，覆盖卡片)
                 {move || if let Some(msg) = error_msg.get() {
                     view! {
-                        <div style="
-                            position: absolute;
-                            top: 0; left: 0; right: 0; bottom: 0;
-                            background: rgba(255, 200, 200, 0.95);
-                            display: flex;
-                            flex-direction: column;
-                            justify-content: center;
-                            align-items: center;
-                            z-index: 15;
-                            border-radius: 8px;
-                            color: #d32f2f;
-                            gap: 10px;
-                        ">
+                        <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255, 200, 200, 0.95); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 15; border-radius: 8px; color: #d32f2f; gap: 10px;">
                             <span style="font-weight: bold;">{msg}</span>
-                            <button
-                                on:click=move |_| fetch_next_batch()
-                                style="padding: 5px 15px; cursor: pointer;">
-                                "Retry"
-                            </button>
+                            <button on:click=move |_| fetch_next_batch() style="padding: 5px 15px; cursor: pointer;">"Retry"</button>
                         </div>
                     }.into_view()
                 } else {
                     view! { <span style="display: none"></span> }.into_view()
                 }}
 
-                // 3. 卡片内容层
                 {move || {
                     let current_cards = cards.get();
                     if current_cards.is_empty() {
                          view! { <div style="height: 150px;"></div> }.into_view()
                     } else {
-                        let card = current_cards.get(current_index.get()).cloned().unwrap_or_else(|| current_cards[0].clone());
+                        // 防止索引越界（比如服务端返回了索引20，但本地只有20张卡，最大索引19）
+                        // 使用 safe get，如果越界则显示最后一张
+                        let safe_index = current_index.get().min(current_cards.len().saturating_sub(1));
+                        let card = current_cards.get(safe_index).cloned().unwrap_or_else(|| current_cards[0].clone());
                         let is_sub = is_submitted.get();
-                        // 如果有 loading 或者 error，禁用输入
                         let is_readonly = is_sub || loading.get() || error_msg.get().is_some();
 
                         view! {
