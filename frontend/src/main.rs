@@ -5,6 +5,7 @@ use gloo_net::http::Request;
 use leptos::html::Input;
 use wasm_bindgen::JsCast;
 
+// ... (结构体定义保持不变)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Card {
     pub id: String,
@@ -54,6 +55,8 @@ fn Quiz() -> impl IntoView {
     let (feedback, set_feedback) = create_signal(Option::<(bool, String)>::None);
     let (loading, set_loading) = create_signal(true);
     let (font_size, set_font_size) = create_signal(3.0);
+    // 新增一个错误状态，用于显示重试按钮
+    let (error_msg, set_error_msg) = create_signal(Option::<String>::None);
 
     let (batch_current, set_batch_current) = create_signal(1);
     let (server_remaining_cards, set_server_remaining_cards) = create_signal(0);
@@ -71,13 +74,17 @@ fn Quiz() -> impl IntoView {
     // 获取下一批数据
     let fetch_next_batch = move || {
         set_loading.set(true);
+        set_error_msg.set(None); // 清除错误
+
         spawn_local(async move {
-            let resp_res = Request::get("/api/next_batch").send().await;
+            // 【关键修复 1】添加随机时间戳，防止浏览器缓存 GET 请求
+            let url = format!("/api/next_batch?t={}", js_sys::Date::now());
+            let resp_res = Request::get(&url).send().await;
 
             match resp_res {
                 Ok(resp) => {
                     if let Ok(batch_data) = resp.json::<BatchResponse>().await {
-                        // 成功获取数据：原子更新所有状态
+                        // 成功获取数据
                         batch(move || {
                             set_cards.set(batch_data.cards);
                             set_batch_current.set(batch_data.batch_current);
@@ -85,26 +92,24 @@ fn Quiz() -> impl IntoView {
                             set_is_review_mode.set(batch_data.is_review);
                             set_mistakes_count.set(batch_data.cycle_mistakes_count);
 
-                            // 重置输入和反馈
                             set_feedback.set(None);
                             set_user_input.set(String::new());
                             set_current_index.set(0);
 
-                            // 只有数据真的换了，才关闭 loading
                             set_loading.set(false);
                         });
                     } else {
-                        // JSON 解析失败（虽然不太可能，但要防守）
-                        // 可以在这里加个 set_loading(false) 或者 alert("Error")
-                        // 但最好不要关闭 loading，让用户感觉“卡住了”比“看到旧卡”好排查
                         error!("Failed to parse batch response");
+                        // 【关键修复 2】解析失败时，不要简单的关闭 loading，而是显示错误状态
+                        // 这样用户就看不到底下的旧卡片了
+                        set_error_msg.set(Some("数据解析失败，请点击重试".to_string()));
+                        set_loading.set(false);
                     }
                 },
                 Err(e) => {
-                    // 网络请求失败
                     error!("Network error: {:?}", e);
-                    // 这里也不要轻易 set_loading(false)，否则用户会看到旧卡片
-                    // 最好显示一个错误提示
+                    set_error_msg.set(Some("网络连接错误，请点击重试".to_string()));
+                    set_loading.set(false);
                 }
             }
         });
@@ -112,14 +117,12 @@ fn Quiz() -> impl IntoView {
 
     create_effect(move |_| { fetch_next_batch(); });
 
-    // 自动聚焦逻辑
     create_effect(move |_| {
         let _ = loading.get();
         let _ = current_index.get();
         let _ = feedback.get();
         if let Some(input) = input_ref.get() {
-            // 只有当不处于 loading 状态时才强制聚焦，避免键盘跳出跳回
-            if !loading.get() {
+            if !loading.get() && error_msg.get().is_none() {
                 let _ = input.focus();
             }
         }
@@ -164,7 +167,6 @@ fn Quiz() -> impl IntoView {
         let next_idx = current_index.get() + 1;
 
         if next_idx >= cards.get().len() {
-            // 到底了，去取新数据。保持当前界面不动，只显示 Loading 遮罩
             fetch_next_batch();
         } else {
             batch(move || {
@@ -178,6 +180,11 @@ fn Quiz() -> impl IntoView {
     let handle_global_enter = window_event_listener(ev::keydown, move |ev| {
         if ev.key() == "Enter" {
             ev.prevent_default();
+            // 如果有错误，回车键触发重试
+            if error_msg.get().is_some() {
+                fetch_next_batch();
+                return;
+            }
             if loading.get() { return; }
 
             if is_submitted.get() {
@@ -224,21 +231,19 @@ fn Quiz() -> impl IntoView {
                 }
             }}
 
-            // 【UI 结构优化】
-            // 不再使用 if loading 替换整个 div，而是保持 div.card 结构稳定
             <div class="card" style="position: relative; min-height: 200px;">
 
-                // 1. Loading 遮罩层 (绝对定位，盖在卡片上面)
+                // 1. Loading 遮罩层 (最高优先级)
                 {move || if loading.get() {
                     view! {
                         <div style="
                             position: absolute;
                             top: 0; left: 0; right: 0; bottom: 0;
-                            background: rgba(255, 255, 255, 0.9);
+                            background: rgba(255, 255, 255, 0.95);
                             display: flex;
                             justify-content: center;
                             align-items: center;
-                            z-index: 10;
+                            z-index: 20;
                             border-radius: 8px;
                             font-size: 1.5rem;
                             color: #666;
@@ -250,18 +255,44 @@ fn Quiz() -> impl IntoView {
                     view! { <span style="display: none"></span> }.into_view()
                 }}
 
-                // 2. 卡片内容层 (始终渲染，但在 loading 时会被上面的遮罩挡住)
+                // 2. Error 遮罩层 (次高优先级，覆盖卡片)
+                {move || if let Some(msg) = error_msg.get() {
+                    view! {
+                        <div style="
+                            position: absolute;
+                            top: 0; left: 0; right: 0; bottom: 0;
+                            background: rgba(255, 200, 200, 0.95);
+                            display: flex;
+                            flex-direction: column;
+                            justify-content: center;
+                            align-items: center;
+                            z-index: 15;
+                            border-radius: 8px;
+                            color: #d32f2f;
+                            gap: 10px;
+                        ">
+                            <span style="font-weight: bold;">{msg}</span>
+                            <button
+                                on:click=move |_| fetch_next_batch()
+                                style="padding: 5px 15px; cursor: pointer;">
+                                "Retry"
+                            </button>
+                        </div>
+                    }.into_view()
+                } else {
+                    view! { <span style="display: none"></span> }.into_view()
+                }}
+
+                // 3. 卡片内容层
                 {move || {
                     let current_cards = cards.get();
-                    // 安全检查：如果数据还没回来（空数组），显示空占位
                     if current_cards.is_empty() {
                          view! { <div style="height: 150px;"></div> }.into_view()
                     } else {
-                        // 如果有数据，显示当前卡片（即使是旧的，也被遮罩挡住了，用户看不见）
-                        // 使用 unwrap_or 保证安全
                         let card = current_cards.get(current_index.get()).cloned().unwrap_or_else(|| current_cards[0].clone());
                         let is_sub = is_submitted.get();
-                        let is_readonly = is_sub || loading.get();
+                        // 如果有 loading 或者 error，禁用输入
+                        let is_readonly = is_sub || loading.get() || error_msg.get().is_some();
 
                         view! {
                             <div>
