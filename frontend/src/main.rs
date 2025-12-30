@@ -23,7 +23,6 @@ pub struct BatchResponse {
     pub is_review: bool,
     pub cycle_mistakes_count: usize,
     pub cards: Vec<Card>,
-    // 即使后端传了 index，我们也不需要了，因为永远是 0
     pub current_card_index: usize,
 }
 
@@ -42,13 +41,12 @@ struct SubmitResponse {
 #[component]
 fn App() -> impl IntoView {
     view! {
-        <main>
+        <main style="display: flex; justify-content: center; align-items: center; height: 100vh; background-color: transparent;">
             <Quiz />
         </main>
     }
 }
 
-// 智能标准化输入函数 (保留你的容错功能)
 fn normalize_input(input: &str) -> String {
     let mut s = input.trim().to_lowercase().replace(" ", "");
     let replacements = [
@@ -77,23 +75,15 @@ fn normalize_input(input: &str) -> String {
 #[component]
 fn Quiz() -> impl IntoView {
     let (cards, set_cards) = create_signal(Vec::<Card>::new());
-    // 永远锁定为 0
     let (current_index, set_current_index) = create_signal(0);
     let (user_input, set_user_input) = create_signal(String::new());
     let (feedback, set_feedback) = create_signal(Option::<(bool, String)>::None);
     let (loading, set_loading) = create_signal(true);
-    let (font_size, set_font_size) = create_signal(3.0);
     let (error_msg, set_error_msg) = create_signal(Option::<String>::None);
 
-    let (batch_current, set_batch_current) = create_signal(1);
-    let (server_remaining_cards, set_server_remaining_cards) = create_signal(0);
-    let (is_review_mode, set_is_review_mode) = create_signal(false);
-    #[allow(unused)]
-    let (mistakes_count, set_mistakes_count) = create_signal(0);
-
-    let current_batch_display = move || {
-        format!("Batch {}", batch_current.get())
-    };
+    // 【新增】控制大小的信号
+    let (font_size, set_font_size) = create_signal(2.0); // 默认假名大小
+    let (card_width, set_card_width) = create_signal(160); // 默认卡片宽度
 
     let is_submitted = create_memo(move |_| feedback.get().is_some());
     let input_ref = create_node_ref::<Input>();
@@ -111,28 +101,20 @@ fn Quiz() -> impl IntoView {
                     if let Ok(batch_data) = resp.json::<BatchResponse>().await {
                         batch(move || {
                             set_cards.set(batch_data.cards);
-                            set_batch_current.set(batch_data.batch_current);
-                            set_server_remaining_cards.set(batch_data.remaining_in_deck);
-                            set_is_review_mode.set(batch_data.is_review);
-                            set_mistakes_count.set(batch_data.cycle_mistakes_count);
-
                             set_feedback.set(None);
                             set_user_input.set(String::new());
-
-                            // 【核心简化】永远重置为 0，因为每次请求回来的都是一张新卡
                             set_current_index.set(0);
-
                             set_loading.set(false);
                         });
                     } else {
                         error!("Failed to parse batch response");
-                        set_error_msg.set(Some("数据解析失败，请点击重试".to_string()));
+                        set_error_msg.set(Some("Error".to_string()));
                         set_loading.set(false);
                     }
                 },
                 Err(e) => {
                     error!("Network error: {:?}", e);
-                    set_error_msg.set(Some("网络连接错误，请点击重试".to_string()));
+                    set_error_msg.set(Some("NetErr".to_string()));
                     set_loading.set(false);
                 }
             }
@@ -164,22 +146,15 @@ fn Quiz() -> impl IntoView {
         let current_cards = cards.get();
         if current_cards.is_empty() { return; }
 
-        // 永远取第 0 张
         let card = &current_cards[0];
         let input_val = user_input.get();
 
-        // 容错处理
         let normalized_user_input = normalize_input(&input_val);
         let normalized_correct_romaji = normalize_input(&card.romaji);
 
         let is_correct = normalized_user_input == normalized_correct_romaji;
-
         let card_id = card.id.clone();
         let romaji = card.romaji.clone();
-
-        if is_correct && is_review_mode.get() {
-            set_mistakes_count.update(|c| if *c > 0 { *c -= 1 });
-        }
 
         spawn_local(async move {
             let _ = Request::post("/api/submit")
@@ -187,124 +162,144 @@ fn Quiz() -> impl IntoView {
                 .unwrap().send().await;
 
             if is_correct {
-                set_feedback.set(Some((true, "Correct!".to_string())));
+                set_feedback.set(Some((true, "".to_string())));
             } else {
-                set_feedback.set(Some((false, format!("Ans: \"{}\"", romaji))));
+                set_feedback.set(Some((false, format!("{}", romaji))));
             }
         });
     };
 
-    let next_card = move || {
-        // 【核心简化】不再翻页，直接请求新卡
-        fetch_next_batch();
-    };
+    let next_card = move || { fetch_next_batch(); };
 
     let handle_global_enter = window_event_listener(ev::keydown, move |ev| {
         if ev.key() == "Enter" {
             ev.prevent_default();
-            if error_msg.get().is_some() {
-                fetch_next_batch();
-                return;
-            }
+            if error_msg.get().is_some() { fetch_next_batch(); return; }
             if loading.get() { return; }
-
-            if is_submitted.get() {
-                next_card();
-            } else {
-                submit_answer();
-            }
+            if is_submitted.get() { next_card(); } else { submit_answer(); }
         }
     });
     on_cleanup(move || handle_global_enter.remove());
 
     view! {
-        <div class="app-container">
+        // 卡片容器，宽度由 card_width 信号控制
+        <div class="card" style=move || format!("
+            width: {}px;
+            padding: 15px;
+            background: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Segoe UI', sans-serif;
+            border: 1px solid #f0f0f0;
+            transition: width 0.2s;
+        ", card_width.get())>
+
+            // Loading
+            {move || if loading.get() {
+                view! { <div style="height: 40px; font-size: 14px; color: #999; display: flex; align-items: center;">"..."</div> }.into_view()
+            } else {
+                view! { <span style="display: none"></span> }.into_view()
+            }}
+
+            // Error
+            {move || if let Some(msg) = error_msg.get() {
+                view! { <div style="color: red; font-size: 12px; cursor: pointer;" on:click=move |_| fetch_next_batch()>{msg} " ↻"</div> }.into_view()
+            } else {
+                view! { <span style="display: none"></span> }.into_view()
+            }}
+
+            // Content
             {move || {
-                let _current = batch_current.get();
-                let _is_review = is_review_mode.get();
-                // 剩余数量 = 服务器剩余 + 当前这 1 张
-                let val = server_remaining_cards.get() + 1;
-                let remaining_display = format!("{} Cards", val);
+                let current_cards = cards.get();
+                if current_cards.is_empty() {
+                     view! { <div style="height: 40px;"></div> }.into_view()
+                } else {
+                    let card = current_cards.get(0).cloned().unwrap_or_else(|| current_cards[0].clone());
+                    let is_sub = is_submitted.get();
+                    let is_readonly = is_sub || loading.get() || error_msg.get().is_some();
 
-                let badge_style = "";
+                    let (kana_color, input_border) = match feedback.get() {
+                        None => ("#333", "1px solid #eee"),
+                        Some((true, _)) => ("#4caf50", "1px solid #4caf50"),
+                        Some((false, _)) => ("#333", "1px solid #e57373"),
+                    };
 
-                view! {
-                    <div class="status-header">
-                        <span class="cycle-badge" style=badge_style>{current_batch_display()}</span>
-                        {move || match feedback.get() {
-                            None => view! { <span></span> }.into_view(),
-                            Some((is_correct, msg)) => {
-                                let color = if is_correct { "#0095f6" } else { "#ed4956" };
-                                view! {
-                                    <span style=format!("color: {}; font-weight: bold; font-size: 14px;", color)>
-                                        {msg}
-                                    </span>
-                                }.into_view()
-                            }
-                        }}
-                        <span>{remaining_display}</span>
-                    </div>
+                    view! {
+                        <div style="width: 100%; display: flex; flex-direction: column; align-items: center;">
+                            // 假名显示区，大小由 font_size 控制
+                            <div style=move || format!("font-size: {}rem; color: {}; font-weight: bold; margin-bottom: 5px; transition: color 0.2s;", font_size.get(), kana_color)>
+                                {card.kana_char}
+                            </div>
+
+                            <input type="text"
+                                prop:value=user_input
+                                prop:readonly=is_readonly
+                                node_ref=input_ref
+                                on:input=move |ev| set_user_input.set(event_target_value(&ev))
+                                style=format!("
+                                    width: 100%;
+                                    text-align: center;
+                                    border: none;
+                                    border-bottom: {};
+                                    outline: none;
+                                    font-size: 14px;
+                                    padding: 4px;
+                                    color: #555;
+                                    background: transparent;
+                                ", input_border)
+                            />
+
+                            <div style="height: 16px; margin-top: 5px; font-size: 12px; font-weight: bold;">
+                                {move || match feedback.get() {
+                                    Some((false, ans)) => view! {
+                                        <span style="color: #e57373;">{"❌ "}{ans}</span>
+                                    }.into_view(),
+                                    Some((true, _)) => view! {
+                                        <span style="color: #4caf50;">"✓"</span>
+                                    }.into_view(),
+                                    _ => view! { <span></span> }.into_view()
+                                }}
+                            </div>
+                        </div>
+                    }.into_view()
                 }
             }}
 
-            <div class="card" style="position: relative; min-height: 200px;">
-                {move || if loading.get() {
-                    view! {
-                        <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255, 255, 255, 0.95); display: flex; justify-content: center; align-items: center; z-index: 20; border-radius: 8px; font-size: 1.5rem; color: #666;">
-                            "Loading..."
-                        </div>
-                    }.into_view()
-                } else {
-                    view! { <span style="display: none"></span> }.into_view()
-                }}
-
-                {move || if let Some(msg) = error_msg.get() {
-                    view! {
-                        <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255, 200, 200, 0.95); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 15; border-radius: 8px; color: #d32f2f; gap: 10px;">
-                            <span style="font-weight: bold;">{msg}</span>
-                            <button on:click=move |_| fetch_next_batch() style="padding: 5px 15px; cursor: pointer;">"Retry"</button>
-                        </div>
-                    }.into_view()
-                } else {
-                    view! { <span style="display: none"></span> }.into_view()
-                }}
-
-                {move || {
-                    let current_cards = cards.get();
-                    if current_cards.is_empty() {
-                         view! { <div style="height: 150px;"></div> }.into_view()
-                    } else {
-                        // 【核心】永远只取第 0 张
-                        let card = current_cards.get(0).cloned().unwrap_or_else(|| current_cards[0].clone());
-                        let is_sub = is_submitted.get();
-                        let is_readonly = is_sub || loading.get() || error_msg.get().is_some();
-
-                        view! {
-                            <div>
-                                <div class="kana-display" style=move || format!("font-size: {}rem", font_size.get())>
-                                    {card.kana_char}
-                                </div>
-                                <div style="width: 100%;">
-                                    <input type="text" placeholder="Type Romaji..."
-                                        prop:value=user_input
-                                        prop:readonly=is_readonly
-                                        node_ref=input_ref
-                                        on:input=move |ev| set_user_input.set(event_target_value(&ev)) />
-                                    // ... 省略 slider
-                                    <div style="margin-top: 20px; display: flex; align-items: center; justify-content: center; gap: 10px; opacity: 0.3; transition: opacity 0.3s;"
-                                         on:mouseenter=|el| { let _ = el.target().expect("el").unchecked_into::<web_sys::HtmlElement>().style().set_property("opacity", "1"); }
-                                         on:mouseleave=|el| { let _ = el.target().expect("el").unchecked_into::<web_sys::HtmlElement>().style().set_property("opacity", "0.3"); }>
-                                        <span style="font-size: 10px;">"A"</span>
-                                        <input type="range" min="0.5" max="6.0" step="0.1" prop:value=move || font_size.get()
-                                            on:input=move |ev| { let val = event_target_value(&ev).parse::<f64>().unwrap_or(3.0); set_font_size.set(val); }
-                                            style="width: 100px; cursor: pointer;" />
-                                        <span style="font-size: 14px;">"A"</span>
-                                    </div>
-                                </div>
-                            </div>
-                        }.into_view()
-                    }
-                }}
+            // 【新增】隐形控制栏 (鼠标悬停时显示)
+            <div style="
+                margin-top: 10px;
+                width: 100%;
+                opacity: 0.1;
+                transition: opacity 0.3s;
+                display: flex;
+                flex-direction: column;
+                gap: 5px;
+                border-top: 1px dashed #f0f0f0;
+                padding-top: 5px;
+            "
+            on:mouseenter=|el| { let _ = el.target().expect("el").unchecked_into::<web_sys::HtmlElement>().style().set_property("opacity", "1"); }
+            on:mouseleave=|el| { let _ = el.target().expect("el").unchecked_into::<web_sys::HtmlElement>().style().set_property("opacity", "0.1"); }
+            >
+                <div style="display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: #ccc;">
+                    <span>"字"</span>
+                    <input type="range" min="1.0" max="4.0" step="0.1"
+                        prop:value=move || font_size.get()
+                        on:input=move |ev| { let val = event_target_value(&ev).parse::<f64>().unwrap_or(2.0); set_font_size.set(val); }
+                        style="width: 70%; cursor: pointer;"
+                    />
+                </div>
+                <div style="display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: #ccc;">
+                    <span>"宽"</span>
+                    <input type="range" min="120" max="400" step="10"
+                        prop:value=move || card_width.get()
+                        on:input=move |ev| { let val = event_target_value(&ev).parse::<i32>().unwrap_or(160); set_card_width.set(val); }
+                        style="width: 70%; cursor: pointer;"
+                    />
+                </div>
             </div>
         </div>
     }
