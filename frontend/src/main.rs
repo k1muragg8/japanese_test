@@ -23,7 +23,6 @@ pub struct BatchResponse {
     pub is_review: bool,
     pub cycle_mistakes_count: usize,
     pub cards: Vec<Card>,
-    // 【同步新增】接收服务端的进度索引
     pub current_card_index: usize,
 }
 
@@ -48,7 +47,7 @@ fn App() -> impl IntoView {
     }
 }
 
-// 智能标准化输入函数（保留）
+// 智能标准化输入函数
 fn normalize_input(input: &str) -> String {
     let mut s = input.trim().to_lowercase().replace(" ", "");
     let replacements = [
@@ -77,6 +76,7 @@ fn normalize_input(input: &str) -> String {
 #[component]
 fn Quiz() -> impl IntoView {
     let (cards, set_cards) = create_signal(Vec::<Card>::new());
+    // index 永远是 0
     let (current_index, set_current_index) = create_signal(0);
     let (user_input, set_user_input) = create_signal(String::new());
     let (feedback, set_feedback) = create_signal(Option::<(bool, String)>::None);
@@ -118,8 +118,8 @@ fn Quiz() -> impl IntoView {
                             set_feedback.set(None);
                             set_user_input.set(String::new());
 
-                            // 【核心修复】使用服务端返回的真实进度，而不是无脑重置为 0
-                            set_current_index.set(batch_data.current_card_index);
+                            // 无论后端说什么，既然我们是单张模式，永远重置为 0
+                            set_current_index.set(0);
 
                             set_loading.set(false);
                         });
@@ -161,12 +161,13 @@ fn Quiz() -> impl IntoView {
 
     let submit_answer = move || {
         let current_cards = cards.get();
+        // 简单保护，虽然理论上 index 总是 0
         if current_index.get() >= current_cards.len() { return; }
 
         let card = &current_cards[current_index.get()];
         let input_val = user_input.get();
 
-        // 标准化输入 + 移除空格
+        // 容错处理
         let normalized_user_input = normalize_input(&input_val);
         let normalized_correct_romaji = normalize_input(&card.romaji);
 
@@ -193,17 +194,8 @@ fn Quiz() -> impl IntoView {
     };
 
     let next_card = move || {
-        let next_idx = current_index.get() + 1;
-
-        if next_idx >= cards.get().len() {
-            fetch_next_batch();
-        } else {
-            batch(move || {
-                set_feedback.set(None);
-                set_user_input.set(String::new());
-                set_current_index.set(next_idx);
-            });
-        }
+        // 【核心修改】简单粗暴：不计算 index+1，直接去服务器拿新卡
+        fetch_next_batch();
     };
 
     let handle_global_enter = window_event_listener(ev::keydown, move |ev| {
@@ -237,7 +229,6 @@ fn Quiz() -> impl IntoView {
                     let val = server_remaining_cards.get() + local_remaining;
                     format!("{} Cards", val)
                 };
-
                 let badge_style = "";
 
                 view! {
@@ -286,10 +277,8 @@ fn Quiz() -> impl IntoView {
                     if current_cards.is_empty() {
                          view! { <div style="height: 150px;"></div> }.into_view()
                     } else {
-                        // 防止索引越界（比如服务端返回了索引20，但本地只有20张卡，最大索引19）
-                        // 使用 safe get，如果越界则显示最后一张
-                        let safe_index = current_index.get().min(current_cards.len().saturating_sub(1));
-                        let card = current_cards.get(safe_index).cloned().unwrap_or_else(|| current_cards[0].clone());
+                        // 永远只取第 0 张
+                        let card = current_cards.get(0).cloned().unwrap_or_else(|| current_cards[0].clone());
                         let is_sub = is_submitted.get();
                         let is_readonly = is_sub || loading.get() || error_msg.get().is_some();
 
@@ -304,7 +293,7 @@ fn Quiz() -> impl IntoView {
                                         prop:readonly=is_readonly
                                         node_ref=input_ref
                                         on:input=move |ev| set_user_input.set(event_target_value(&ev)) />
-
+                                    // ... 省略下面的 slider 代码，保持不变
                                     <div style="margin-top: 20px; display: flex; align-items: center; justify-content: center; gap: 10px; opacity: 0.3; transition: opacity 0.3s;"
                                          on:mouseenter=|el| { let _ = el.target().expect("el").unchecked_into::<web_sys::HtmlElement>().style().set_property("opacity", "1"); }
                                          on:mouseleave=|el| { let _ = el.target().expect("el").unchecked_into::<web_sys::HtmlElement>().style().set_property("opacity", "0.3"); }>

@@ -37,7 +37,8 @@ impl App {
         let due_count = db.get_count_due().await?;
         let total_cards_count = db.get_total_count().await?;
 
-        let batch_size = 20.0;
+        // 估算批次没什么用了，但留着防止前端除以0
+        let batch_size = 1.0;
         let estimated_total_batches = if total_cards_count > 0 {
             (total_cards_count as f64 / batch_size).ceil() as usize
         } else {
@@ -80,10 +81,10 @@ impl App {
     }
 
     async fn load_next_queue_batch(&mut self) {
-        // === 配置区域 ===
+        // === 核心修改：简单粗暴，一次只处理一张 ===
         const COMBO_SIZE: usize = 3; // 3连击
-        const BATCH_SIZE: usize = 20;
-        // ================
+        const BATCH_SIZE: usize = 1; // 【改为1】每次只发一组
+        // =======================================
 
         let ids_needed = BATCH_SIZE * COMBO_SIZE;
         let drain_count = std::cmp::min(ids_needed, self.deck_queue.len());
@@ -107,8 +108,7 @@ impl App {
 
                     for card in chunk {
                         merged_kana.push_str(&card.kana_char);
-                        // 【关键修复】加上 .trim() 去除数据库可能存在的隐形空格
-                        // 否则 "ka " + "no" 会变成 "ka no"，导致你输入 "kano" 报错
+                        // 依然保留去空格逻辑
                         merged_romaji.push_str(card.romaji.trim());
                     }
 
@@ -125,6 +125,7 @@ impl App {
                 }
 
                 self.due_cards = combo_cards;
+                // 每次发新牌，索引必然归零
                 self.current_card_index = 0;
                 self.state = AppState::Quiz;
             }
@@ -133,7 +134,6 @@ impl App {
 
     #[allow(unused)]
     async fn load_review_batch(&mut self) {
-        // 占位符，现在不使用复习模式
         self.due_cards = Vec::new();
         self.current_card_index = 0;
     }
@@ -145,8 +145,9 @@ impl App {
         self.current_feedback = None;
         self.feedback_detail.clear();
 
+        // 因为 BATCH_SIZE = 1，所以做完一张 current_index 就会变成 1
+        // 1 >= 1 成立，立即触发下一轮发牌
         if self.current_card_index >= self.due_cards.len() {
-            // 简单的无限循环模式：有牌发牌，没牌洗牌
             if !self.deck_queue.is_empty() {
                 self.batch_counter += 1;
                 self.load_next_queue_batch().await;

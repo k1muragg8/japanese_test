@@ -37,7 +37,7 @@ pub struct BatchResponse {
     pub is_review: bool,
     pub cycle_mistakes_count: usize,
     pub cards: Vec<Card>,
-    // 【新增】告诉前端当前的真实进度索引
+    // 【新增】后端告诉前端：现在到底该做第几张了！
     pub current_card_index: usize,
 }
 
@@ -47,7 +47,6 @@ async fn get_next_batch(State(state): State<ApiState>) -> impl IntoResponse {
     let is_batch_empty = app.due_cards.is_empty();
     let is_batch_finished = app.current_card_index >= app.due_cards.len();
 
-    // 如果当前批次做完了，或者为空，才去生成新的
     if is_batch_empty {
         app.start_quiz().await;
     } else if is_batch_finished {
@@ -64,7 +63,7 @@ async fn get_next_batch(State(state): State<ApiState>) -> impl IntoResponse {
         is_review: is_review_effective,
         cycle_mistakes_count: app.cycle_mistakes.len(),
         cards: app.due_cards.clone(),
-        // 【关键】返回服务端记录的当前索引
+        // 【填充数据】把真实的进度发出去
         current_card_index: app.current_card_index,
     };
 
@@ -96,10 +95,8 @@ async fn submit_answer(
         app.cycle_mistakes.insert(payload.card_id.clone());
     }
 
-    // 后端推移进度
     app.current_card_index += 1;
 
-    // 如果做完了，准备下一批
     if app.current_card_index >= app.due_cards.len() {
         app.next_card().await;
     }
