@@ -23,6 +23,7 @@ pub struct BatchResponse {
     pub is_review: bool,
     pub cycle_mistakes_count: usize,
     pub cards: Vec<Card>,
+    // 即使后端传了 index，我们也不需要了，因为永远是 0
     pub current_card_index: usize,
 }
 
@@ -47,7 +48,7 @@ fn App() -> impl IntoView {
     }
 }
 
-// 智能标准化输入函数
+// 智能标准化输入函数 (保留你的容错功能)
 fn normalize_input(input: &str) -> String {
     let mut s = input.trim().to_lowercase().replace(" ", "");
     let replacements = [
@@ -76,7 +77,7 @@ fn normalize_input(input: &str) -> String {
 #[component]
 fn Quiz() -> impl IntoView {
     let (cards, set_cards) = create_signal(Vec::<Card>::new());
-    // index 永远是 0
+    // 永远锁定为 0
     let (current_index, set_current_index) = create_signal(0);
     let (user_input, set_user_input) = create_signal(String::new());
     let (feedback, set_feedback) = create_signal(Option::<(bool, String)>::None);
@@ -118,7 +119,7 @@ fn Quiz() -> impl IntoView {
                             set_feedback.set(None);
                             set_user_input.set(String::new());
 
-                            // 无论后端说什么，既然我们是单张模式，永远重置为 0
+                            // 【核心简化】永远重置为 0，因为每次请求回来的都是一张新卡
                             set_current_index.set(0);
 
                             set_loading.set(false);
@@ -161,10 +162,10 @@ fn Quiz() -> impl IntoView {
 
     let submit_answer = move || {
         let current_cards = cards.get();
-        // 简单保护，虽然理论上 index 总是 0
-        if current_index.get() >= current_cards.len() { return; }
+        if current_cards.is_empty() { return; }
 
-        let card = &current_cards[current_index.get()];
+        // 永远取第 0 张
+        let card = &current_cards[0];
         let input_val = user_input.get();
 
         // 容错处理
@@ -194,7 +195,7 @@ fn Quiz() -> impl IntoView {
     };
 
     let next_card = move || {
-        // 【核心修改】简单粗暴：不计算 index+1，直接去服务器拿新卡
+        // 【核心简化】不再翻页，直接请求新卡
         fetch_next_batch();
     };
 
@@ -220,15 +221,11 @@ fn Quiz() -> impl IntoView {
         <div class="app-container">
             {move || {
                 let _current = batch_current.get();
-                let is_review = is_review_mode.get();
-                let local_remaining = cards.get().len().saturating_sub(current_index.get());
+                let _is_review = is_review_mode.get();
+                // 剩余数量 = 服务器剩余 + 当前这 1 张
+                let val = server_remaining_cards.get() + 1;
+                let remaining_display = format!("{} Cards", val);
 
-                let remaining_display = if is_review {
-                    format!("{} Mistakes", local_remaining)
-                } else {
-                    let val = server_remaining_cards.get() + local_remaining;
-                    format!("{} Cards", val)
-                };
                 let badge_style = "";
 
                 view! {
@@ -277,7 +274,7 @@ fn Quiz() -> impl IntoView {
                     if current_cards.is_empty() {
                          view! { <div style="height: 150px;"></div> }.into_view()
                     } else {
-                        // 永远只取第 0 张
+                        // 【核心】永远只取第 0 张
                         let card = current_cards.get(0).cloned().unwrap_or_else(|| current_cards[0].clone());
                         let is_sub = is_submitted.get();
                         let is_readonly = is_sub || loading.get() || error_msg.get().is_some();
@@ -293,7 +290,7 @@ fn Quiz() -> impl IntoView {
                                         prop:readonly=is_readonly
                                         node_ref=input_ref
                                         on:input=move |ev| set_user_input.set(event_target_value(&ev)) />
-                                    // ... 省略下面的 slider 代码，保持不变
+                                    // ... 省略 slider
                                     <div style="margin-top: 20px; display: flex; align-items: center; justify-content: center; gap: 10px; opacity: 0.3; transition: opacity 0.3s;"
                                          on:mouseenter=|el| { let _ = el.target().expect("el").unchecked_into::<web_sys::HtmlElement>().style().set_property("opacity", "1"); }
                                          on:mouseleave=|el| { let _ = el.target().expect("el").unchecked_into::<web_sys::HtmlElement>().style().set_property("opacity", "0.3"); }>

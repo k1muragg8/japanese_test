@@ -22,7 +22,6 @@ pub struct App {
     pub due_count: i64,
     pub session_start: Instant,
 
-    // Cycle Fields
     pub deck_queue: Vec<String>,
     pub cycle_mistakes: std::collections::HashSet<String>,
     pub batch_counter: usize,
@@ -37,7 +36,7 @@ impl App {
         let due_count = db.get_count_due().await?;
         let total_cards_count = db.get_total_count().await?;
 
-        // 估算批次没什么用了，但留着防止前端除以0
+        // 既然是单张模式，估算批次也没太大意义了，保持简单防止除零错误
         let batch_size = 1.0;
         let estimated_total_batches = if total_cards_count > 0 {
             (total_cards_count as f64 / batch_size).ceil() as usize
@@ -81,10 +80,10 @@ impl App {
     }
 
     async fn load_next_queue_batch(&mut self) {
-        // === 核心修改：简单粗暴，一次只处理一张 ===
-        const COMBO_SIZE: usize = 3; // 3连击
-        const BATCH_SIZE: usize = 1; // 【改为1】每次只发一组
-        // =======================================
+        // === 核心修改：一次只发一张 ===
+        const COMBO_SIZE: usize = 3; // 依然保持3个假名缝合
+        const BATCH_SIZE: usize = 1; // 【改为1】每次只处理1个组合
+        // ===========================
 
         let ids_needed = BATCH_SIZE * COMBO_SIZE;
         let drain_count = std::cmp::min(ids_needed, self.deck_queue.len());
@@ -125,7 +124,7 @@ impl App {
                 }
 
                 self.due_cards = combo_cards;
-                // 每次发新牌，索引必然归零
+                // 每次从数据库取新牌，索引必然归零
                 self.current_card_index = 0;
                 self.state = AppState::Quiz;
             }
@@ -145,8 +144,8 @@ impl App {
         self.current_feedback = None;
         self.feedback_detail.clear();
 
-        // 因为 BATCH_SIZE = 1，所以做完一张 current_index 就会变成 1
-        // 1 >= 1 成立，立即触发下一轮发牌
+        // 因为 BATCH_SIZE = 1，做完一张后 index 变成 1，1 >= 1 成立
+        // 立即去取下一张，没有任何“批次”残留
         if self.current_card_index >= self.due_cards.len() {
             if !self.deck_queue.is_empty() {
                 self.batch_counter += 1;
