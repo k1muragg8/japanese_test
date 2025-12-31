@@ -81,9 +81,8 @@ fn Quiz() -> impl IntoView {
     let (loading, set_loading) = create_signal(true);
     let (error_msg, set_error_msg) = create_signal(Option::<String>::None);
 
-    // 【新增】控制大小的信号
-    let (font_size, set_font_size) = create_signal(2.0); // 默认假名大小
-    let (card_width, set_card_width) = create_signal(160); // 默认卡片宽度
+    let (font_size, set_font_size) = create_signal(2.0);
+    let (card_width, set_card_width) = create_signal(160);
 
     let is_submitted = create_memo(move |_| feedback.get().is_some());
     let input_ref = create_node_ref::<Input>();
@@ -182,7 +181,6 @@ fn Quiz() -> impl IntoView {
     on_cleanup(move || handle_global_enter.remove());
 
     view! {
-        // 卡片容器，宽度由 card_width 信号控制
         <div class="card" style=move || format!("
             width: {}px;
             padding: 15px;
@@ -230,8 +228,17 @@ fn Quiz() -> impl IntoView {
 
                     view! {
                         <div style="width: 100%; display: flex; flex-direction: column; align-items: center;">
-                            // 假名显示区，大小由 font_size 控制
-                            <div style=move || format!("font-size: {}rem; color: {}; font-weight: bold; margin-bottom: 5px; transition: color 0.2s;", font_size.get(), kana_color)>
+                            // 【字体优化】
+                            // 1. font-family: 优先使用 Meiryo 和 Hiragino，这些字体的浊音符号设计得更好。
+                            // 2. font-weight: normal (去掉 bold)，防止加粗把圈圈糊住。
+                            <div style=move || format!("
+                                font-size: {}rem;
+                                color: {};
+                                font-family: 'Meiryo', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', sans-serif;
+                                font-weight: normal;
+                                margin-bottom: 5px;
+                                transition: color 0.2s;
+                            ", font_size.get(), kana_color)>
                                 {card.kana_char}
                             </div>
 
@@ -269,7 +276,7 @@ fn Quiz() -> impl IntoView {
                 }
             }}
 
-            // 【新增】隐形控制栏 (鼠标悬停时显示)
+            // 隐形控制栏
             <div style="
                 margin-top: 10px;
                 width: 100%;
